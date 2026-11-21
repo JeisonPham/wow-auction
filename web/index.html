@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WoW Auction Monitor</title>
+    <link rel="stylesheet" href="/app.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <header>
+      <div class="rail">
+        <div class="brand">
+          <span class="seal" aria-hidden="true">⚖</span> WoW Auction Monitor
+        </div>
+        <div class="connection">
+          <span id="connection" role="status">Connecting</span
+          ><button id="refresh">↻ &nbsp; Refresh</button>
+        </div>
+      </div>
+    </header>
+    <main>
+      <div class="intro">
+        <div>
+          <p id="scope">Auction house</p>
+          <h1>Market prices</h1>
+        </div>
+        <span id="updated"></span>
+      </div>
+      <div class="stats">
+        <div>
+          <small>TSM estimates</small><strong id="count">—</strong
+          ><span id="source"></span><span id="client-upload"></span
+          ><a id="tsm-desktop" target="_blank" rel="noreferrer" hidden
+            >Open TSM Desktop</a
+          >
+        </div>
+        <div>
+          <small>Estimate age</small><strong id="age">—</strong
+          ><span id="observed"></span>
+        </div>
+        <div>
+          <small>Items checked in game</small><strong id="coverage">—</strong
+          ><span>Includes checked-empty items</span>
+        </div>
+      </div>
+      <nav aria-label="Dashboard views">
+        <a href="#market">Market prices</a
+        ><a href="#opportunities">Opportunities</a
+        ><a href="#professions">Professions</a>
+      </nav>
+      <div id="notice" role="status" hidden></div>
+      <section>
+        <div class="controls">
+          <label class="search"
+            >Find item<input
+              id="search"
+              type="search"
+              placeholder="Search by name or item ID" /></label
+          ><label id="profLabel"
+            >Profession<select id="profession"></select></label
+          ><label id="routeLabel"
+            >Route<select id="route">
+              <option value="">All routes</option>
+              <option value="chain">Chained paths</option>
+              <option value="craft">Craft → vendor</option>
+              <option value="craft_disenchant">Craft → disenchant</option>
+              <option value="craft_auction">Craft → auction</option>
+              <option value="vendor">Buy → vendor</option>
+              <option value="disenchant">Buy → disenchant</option>
+            </select></label
+          ><label id="accessLabel"
+            >Access<select id="access">
+              <option value="">Any access</option>
+              <option value="ready">Ready now</option>
+              <option value="training">Training or roster needed</option>
+            </select></label
+          ><label id="levelLabel"
+            >Max. character level<input
+              id="level"
+              type="number"
+              min="1"
+              max="999"
+              placeholder="Any" /></label
+          ><label id="trainingCostLabel"
+            >Training budget (gold)<input
+              type="number"
+              id="trainingCost"
+              min="0"
+              step="0.01"
+              placeholder="Optional" /></label
+          ><label id="batchSizeLabel"
+            >Batch size (runs)<input
+              id="batchSize"
+              type="number"
+              min="1"
+              max="10000"
+              step="1"
+              value="1"
+              required
+          /></label>
+          <label>Sort by<select id="sort"></select></label>
+        </div>
+        <aside id="training" hidden></aside>
+        <div class="scroll">
+          <table>
+            <thead id="head"></thead>
+            <tbody id="body"></tbody>
+          </table>
+        </div>
+        <div id="empty"></div>
+        <footer>
+          <span id="range"></span>
+          <div>
+            <button id="prev" aria-label="Previous page">←</button>
+            <button id="next" aria-label="Next page">→</button>
+          </div>
+        </footer>
+      </section>
+    </main>
+    <dialog id="simulation" aria-labelledby="sim-title">
+      <header class="sim-heading">
+        <h2 id="sim-title">Reagent price simulation</h2>
+        <button id="sim-close" type="button" aria-label="Close simulation">
+          ×
+        </button>
+      </header>
+      <p id="sim-context"></p>
+      <div class="scroll">
+        <table aria-label="Simulation inputs">
+          <thead>
+            <tr>
+              <th>Item</th>
+              <th>Quantity</th>
+              <th>Quote per unit</th>
+              <th>Source</th>
+            </tr>
+          </thead>
+          <tbody id="sim-inputs"></tbody>
+        </table>
+      </div>
+      <p id="sim-stock" class="estimated" hidden></p>
+      <form id="sim-form">
+        <label
+          >Standard deviation (% of quote)<input
+            id="sim-volatility"
+            type="number"
+            value="10"
+            min="0"
+            max="100"
+            step="any"
+            required
+        /></label>
+        <label
+          >Trials<input
+            id="sim-trials"
+            type="number"
+            value="5000"
+            min="100"
+            max="50000"
+            step="1"
+            required
+        /></label>
+        <button type="submit">Run simulation</button>
+      </form>
+      <p class="hint">
+        Each trial draws one independent normal price per auction item. The
+        quote sets the center and the percentage sets the spread. Negative draws
+        are sampled again.
+      </p>
+      <output id="sim-status" role="status"></output>
+      <div id="sim-result"></div>
+    </dialog>
+  </body>
+</html>

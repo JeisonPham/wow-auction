@@ -1,0 +1,8 @@
+/target/
+/.build/
+/.env
+/client.env
+/local-data/
+__pycache__/
+*.zip
+.DS_Store

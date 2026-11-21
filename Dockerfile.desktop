@@ -1,0 +1,40 @@
+FROM rust:1.93.1-trixie AS build
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+COPY web ./web
+RUN cargo build --locked --release
+
+# Official Linux release linked by TSM. Extract at build time so FUSE is unnecessary.
+FROM buildpack-deps:trixie-curl AS desktop
+WORKDIR /tmp/desktop
+RUN curl --fail --show-error --silent --location --retry 3 \
+        https://tsm-desktop-app-builds-production.nyc3.cdn.digitaloceanspaces.com/versions/1.0.14/TradeSkillMaster.AppImage \
+        -o TradeSkillMaster.AppImage \
+    && chmod +x TradeSkillMaster.AppImage \
+    && ./TradeSkillMaster.AppImage --appimage-extract >/dev/null \
+    && test -x squashfs-root/AppRun
+
+FROM jlesage/baseimage-gui:debian-13-v4
+RUN add-pkg python3 curl ca-certificates firefox-esr dbus-x11 gnome-keyring gcr \
+        xdg-utils desktop-file-utils libgtk-3-0t64 libnss3 libasound2t64 libgbm1 \
+        libxss1 libsecret-1-0 libnotify4 libayatana-appindicator3-1 libgl1 libgl1-mesa-dri libwebkit2gtk-4.1-0 \
+    && install -d -o 10001 -g 10001 /data \
+    && mkdir -p /wow /etc/services.d/dashboard /etc/services.d/tsm-sync
+COPY --from=desktop /tmp/desktop/squashfs-root /opt/tsm
+COPY --from=build /src/target/release/wow-auction-monitor /usr/local/bin/
+COPY client/sync.py client/snapshot.py client/lua_data.py client/disenchant.py /opt/scanner/
+COPY --chmod=755 container/start-tsm.sh /startapp.sh
+COPY --chmod=755 container/sync.sh /etc/services.d/tsm-sync/run
+RUN ln -s /usr/local/bin/wow-auction-monitor /etc/services.d/dashboard/run \
+    && printf '10001\n' > /etc/services.d/dashboard/uid \
+    && printf '10001\n' > /etc/services.d/dashboard/gid \
+    && touch /etc/services.d/dashboard/respawn /etc/services.d/default/dashboard.dep \
+             /etc/services.d/tsm-sync/respawn /etc/services.d/tsm-sync/dashboard.dep \
+             /etc/services.d/default/tsm-sync.dep \
+    && set-cont-env APP_NAME "TradeSkillMaster Desktop" \
+    && for entry in /opt/tsm/*.desktop; do \
+        if [ -f "$entry" ]; then sed -E 's@^Exec=("[^"]+"|[^ ]+)@Exec=/opt/tsm/AppRun@' "$entry" > /usr/share/applications/tsm-desktop.desktop; break; fi; done \
+    && update-desktop-database /usr/share/applications
+ENV WOW_DATA_DIR=/data KEEP_APP_RUNNING=1 USER_ID=10001 GROUP_ID=10001
+EXPOSE 8765

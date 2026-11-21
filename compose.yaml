@@ -1,0 +1,23 @@
+services:
+  dashboard:
+    build: .
+    pull_policy: build
+    image: ${WOW_IMAGE:-wow-auction-monitor:local}
+    ports:
+      - "127.0.0.1:${WOW_PORT:-8765}:8765"
+    environment:
+      WOW_UPLOAD_TOKEN: ${WOW_UPLOAD_TOKEN:?Run python3 start.py --init-only or set WOW_UPLOAD_TOKEN}
+      WOW_REGION: ${WOW_REGION:-Forever-US}
+      WOW_MARKET: ${WOW_MARKET:-Normal-Alliance}
+      WOW_TSM_PUBLIC: ${WOW_TSM_PUBLIC:-1}
+      WOW_MAX_AGE_SECONDS: ${WOW_MAX_AGE_SECONDS:-21600}
+    volumes:
+      - dashboard-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD","curl","-fsS","http://127.0.0.1:8765/healthz"]
+      timeout: 5s
+      interval: 30s
+      retries: 3
+volumes:
+  dashboard-data: {}

@@ -1,0 +1,8 @@
+## Interface: 16001
+## Title: WoW Auction Sync
+## Notes: Record auction scans, profession slots, ranks and learned recipes.
+## Version: 0.3.0
+## SavedVariables: WowAuctionSyncDB
+Queue.lua
+Scanner.lua
+Recipes.lua

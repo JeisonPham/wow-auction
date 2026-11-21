@@ -1,0 +1,20 @@
+services:
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.desktop
+    image: ${WOW_DESKTOP_IMAGE:-wow-auction-monitor:desktop}
+    platform: linux/amd64
+    shm_size: 512m
+    security_opt:
+      - seccomp=./container/browser-seccomp.json
+    ports:
+      - "127.0.0.1:${WOW_TSM_PORT:-5800}:5800"
+    environment:
+      USER_ID: ${WOW_TSM_UID:-10001}
+      GROUP_ID: ${WOW_TSM_GID:-10001}
+      WOW_TSM_DESKTOP_PORT: ${WOW_TSM_PORT:-5800}
+    volumes:
+      - tsm-profile:/config
+volumes:
+  tsm-profile: {}

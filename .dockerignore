@@ -1,0 +1,14 @@
+**
+!Cargo.toml
+!Cargo.lock
+!src/
+!src/**
+!web/
+!web/**
+!client/
+!client/sync.py
+!client/snapshot.py
+!client/lua_data.py
+!client/disenchant.py
+!container/
+!container/*.sh
