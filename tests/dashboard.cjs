@@ -174,6 +174,7 @@ async function runSimulation() {
 (async () => {
   await wait();
   assert.equal(d.querySelector("#batchSizeLabel").hidden, true);
+  assert.equal(d.querySelector("#profitabilityLabel").hidden, true);
   assert.equal(d.querySelectorAll("#body>tr").length, 40);
   d.querySelector(".rowname").click();
   d.querySelector("[data-sim-item]").click();
@@ -376,8 +377,66 @@ async function runSimulation() {
   await wait();
   assert.match(d.querySelector("#notice").textContent, /Connection lost/);
   assert.equal(d.querySelectorAll(".route").length, 1);
+
+  const marginCases = [
+    ["Margin gain", "craft", 12, "insufficient"],
+    ["Margin even", "craft_disenchant", 0, "verified"],
+    ["Margin loss", "craft_auction", -9, "estimated"],
+    ["Margin unknown", "craft", null, "insufficient"],
+    ["Margin buy", "vendor", -3, "verified"],
+  ];
+  for (const [index, [name, kind, profit, stock]] of marginCases.entries()) {
+    items.push({
+      id: 3000 + index,
+      name,
+      routes: [
+        {
+          ...route,
+          name,
+          kind,
+          profit,
+          stock,
+          proceeds: profit == null ? null : route.cost + profit,
+        },
+      ],
+    });
+  }
+  fail = false;
+  d.querySelector("#refresh").click();
+  await wait();
+  for (const view of ["professions", "opportunities"]) {
+    w.location.hash = "#" + view;
+    await wait();
+    filter("search", "Margin");
+    filter("level", "");
+    filter("sort", "profit");
+    assert.equal(d.querySelector("#profitabilityLabel").hidden, false);
+    assert.equal(d.querySelector("#profitability").value, "");
+    const visibleMargins = () =>
+      [...d.querySelectorAll("#body tr td:nth-child(4)")].map(
+        (td) => td.textContent,
+      );
+    assert.deepEqual(visibleMargins(), ["12c", "0c", "−9c", "Unknown"]);
+    for (const [value, expected] of [
+      ["profit", "12c"],
+      ["even", "0c"],
+      ["unknown", "Unknown"],
+      ["loss", "−9c"],
+    ]) {
+      filter("profitability", value);
+      assert.deepEqual(visibleMargins(), [expected]);
+    }
+    filter("route", "craft");
+    assert.deepEqual(visibleMargins(), []);
+    filter("route", "");
+  }
+  filter("profitability", "");
+  w.location.hash = "#professions";
+  await wait();
+  assert.equal(d.querySelector("#profitability").value, "loss");
+  assert.match(d.querySelector("#body").textContent, /Margin loss/);
   console.log(
-    "Dashboard search, pagination, routes, batch shortage, postage, clipboard and offline retention passed",
+    "Dashboard search, pagination, profit filters, routes, batch shortage, postage, clipboard and offline retention passed",
   );
   dom.window.close();
 })().catch((e) => {

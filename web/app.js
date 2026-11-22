@@ -123,12 +123,14 @@ function setup() {
   $("search").value = p.search;
   $("level").value = p.level;
   $("route").value = p.route || "";
+  $("profitability").value = p.profitability || "";
   $("trainingCost").value = p.trainingCost || "";
   $("trainingCostLabel").hidden = v !== "professions";
   $("batchSize").value = saved.batchSize;
   $("batchSizeLabel").hidden = v === "market";
   $("access").value = p.access || "";
   $("routeLabel").hidden =
+    $("profitabilityLabel").hidden =
     $("accessLabel").hidden =
     $("levelLabel").hidden =
     $("profLabel").hidden =
@@ -187,6 +189,12 @@ function reqText(r) {
 }
 const isCraft = (r) =>
   ["craft", "craft_disenchant", "craft_auction"].includes(r.kind);
+function profitability(profit) {
+  if (profit == null) return "unknown";
+  if (profit > 0) return "profit";
+  if (profit < 0) return "loss";
+  return "even";
+}
 const destroys = (r) =>
   r.kind === "disenchant" || r.kind === "craft_disenchant";
 const exitLabel = (r) =>
@@ -368,6 +376,7 @@ function render() {
     for (const [index, r] of i.routes.entries()) {
       if (
         v === "opportunities" &&
+        !isCraft(r) &&
         !(r.profit > 0 && r.stock !== "insufficient")
       )
         continue;
@@ -375,6 +384,8 @@ function render() {
       const prof =
         r.profession || (r.kind === "vendor" ? "Vendor" : "Crafting");
       profs.add(prof);
+      if (p.profitability && profitability(r.profit) !== p.profitability)
+        continue;
       if (
         p.route === "chain" ? !r.stages?.length : p.route && r.kind !== p.route
       )
@@ -479,7 +490,11 @@ function render() {
                   ) +
                   "</small>"),
             money(r.cost),
-            '<span class="profit">' + money(r.profit) + "</span>",
+            '<span class="' +
+              profitability(r.profit) +
+              '">' +
+              (r.profit == null ? "Unknown" : money(r.profit)) +
+              "</span>",
             duration(r.timing?.elapsed_seconds) +
               (r.timing?.assumed_cast
                 ? "<br><small>Assumed cast time</small>"
@@ -1272,6 +1287,7 @@ for (const key of [
   "sort",
   "access",
   "route",
+  "profitability",
   "trainingCost",
 ])
   $(key).oninput = (e) => {

@@ -45,9 +45,11 @@ Set `WOW_PORT` in the server's `.env` to change the host port. The server also f
 
 For an all-in-one installation, run `python3 start.py server --desktop` on the machine with the game files. Supply `--wow-dir` for a custom installation. Open **http://127.0.0.1:5800/**, sign in to TSM, select `/wow` and enable AppHelper. This optional image bundles the Linux amd64 desktop app, its browser and the watcher. It preserves the desktop profile in `tsm-profile`. Only the Forever `Interface/AddOns` mount is writable in the game directory. Set `WOW_TSM_PORT` to change the desktop port. [Browser sandbox profile sources](container/MOBY-LICENSE.txt)
 
-## Find profitable crafts and plan professions
+## Browse crafts and plan professions
 
-Open **Professions** to evaluate the full catalog, or **Opportunities** for positive margins with enough known stock or estimated availability. Pick **Craft → vendor**, **Craft → disenchant**, or **Craft → auction** in the route filter. The table shows the cost and profit per recipe run. Expand a row for reagents, quantities, qualifications, price sources, cooldowns when known and batch calculations. Eligible direct buy-to-vendor and buy-to-disenchant routes are also supported.
+Open **Opportunities** or **Professions** to see all crafts the planner evaluates for your market, including unlearned recipes and crafts with insufficient reagent stock. **Profit per run** defaults to **All margins**. Choose **Profitable** for gains above zero, **Break-even** for zero profit, **Loss** for negative profit, or **Unknown** when the planner lacks a cost or sale value. Check the **Stock** column separately for reagent availability.
+
+Pick **Craft → vendor**, **Craft → disenchant**, or **Craft → auction** in the route filter. The table shows the cost and profit per recipe run. Expand a row for reagents, quantities, qualifications, price sources, cooldowns when known and batch calculations. Eligible direct buy-to-vendor and buy-to-disenchant routes are also supported.
 
 **Max. character level** includes routes at or below your limit. It checks profession ranks, recipe and pattern learning levels, and disenchanting across every step. If a bind-on-pickup pattern comes only from quests in the catalog, the crafter must also meet the minimum level to accept a qualifying quest. Expand a route to see the pattern and its recorded level requirements. A plain buy-to-vendor route is available at level 1. Routes with an unknown level are hidden while a limit is set. Clear the field to see them again.
 

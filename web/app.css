@@ -258,6 +258,9 @@ td {
 .verified {
   color: #9edac0;
 }
+.loss {
+  color: #ffa99e;
+}
 .estimated {
   color: var(--gold);
 }
