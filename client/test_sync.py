@@ -10,6 +10,36 @@ from sync import addon_path, endpoint, install, write_queue
 
 
 class ScannerTests(unittest.TestCase):
+    def test_first_save_and_empty_accounts(self):
+        with tempfile.TemporaryDirectory() as folder:
+            game = Path(folder)
+            empty = game / "WTF/Account/A/SavedVariables/WowAuctionSync.lua"
+            empty.parent.mkdir(parents=True)
+            for contents in ("", "-- first login\n", "WowAuctionSyncDB = nil",
+                             "WowAuctionSyncDB = {}", "WowAuctionSyncDB = {version=1}"):
+                empty.write_text(contents, encoding="utf-8-sig")
+                with self.subTest(contents=contents), self.assertRaisesRegex(ValueError, "/wamsync roster.* /reload"):
+                    export(fingerprint(game), "Forever-US", "Normal-Alliance")
+
+            helper = game / "Interface/AddOns/TradeSkillMaster_AppHelper/AppData.lua"
+            helper.parent.mkdir(parents=True)
+            helper.write_text('LoadData("AUCTIONDB_NON_COMMODITY_DATA","Normal-Alliance",[[return {downloadTime=99,fields={"itemString","marketValueRecent","numAuctions"},data={{123,A,2}}}]])')
+            empty.write_text("WowAuctionSyncDB = nil -- unused account")
+            bundle = export(fingerprint(game), "Forever-US", "Normal-Alliance")
+            self.assertEqual(bundle["snapshot"]["estimate_at"], 99)
+            self.assertNotIn("newest_price_at", bundle["snapshot"])
+
+            helper.unlink()
+            full = game / "WTF/Account/B/SavedVariables/WOWAuctionSync.lua"
+            full.parent.mkdir(parents=True)
+            full.write_text('WowAuctionSyncDB = {version=1, markets={["Normal-Alliance"]={region="Forever-US",capturedAt=100,complete=true,items={}}}}')
+            bundle = export(fingerprint(game), "Forever-US", "Normal-Alliance")
+            self.assertEqual(bundle["snapshot"]["newest_price_at"], 100)
+            self.assertEqual(bundle["snapshot"]["prices"], {})
+            empty.write_text("WowAuctionSyncDB = unexpected")
+            with self.assertRaisesRegex(ValueError, "Expected the saved table WowAuctionSyncDB"):
+                export(fingerprint(game), "Forever-US", "Normal-Alliance")
+
     def test_install_export_queue(self):
         with tempfile.TemporaryDirectory() as folder:
             game = Path(folder)
@@ -195,7 +225,7 @@ class ScannerTests(unittest.TestCase):
             install(game)
             path = game / "WTF/Account/A/SavedVariables/WowAuctionSync.lua"
             path.parent.mkdir(parents=True)
-            path.write_text("WowAuctionSyncDB = {version=1, markets={}, profiles={}}")
+            path.write_text('WowAuctionSyncDB = {version=1,profiles={["Forever-US/Normal-Alliance"]={characters={Ada={level=10}}}}}')
             rev = path.stat().st_mtime_ns // 1000
             scope = {"region": "Forever-US", "market": "Normal-Alliance"}
             queue = dict(

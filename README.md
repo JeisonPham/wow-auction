@@ -2,6 +2,8 @@
 
 A local auction scanner and market dashboard for WoW Forever. The scanner evaluates 2,051 catalog recipes across 14 professions and class skill lines, including recipes your characters have never learned. The default market is **Forever-US / Normal-Alliance**.
 
+If your server is already running, go to [install or update the gaming PC add-on](#connect-your-characters-and-check-stock). If the uploader says **No saved database**, see [saved database and upload troubleshooting](#saved-database-and-upload-troubleshooting).
+
 ## Upload from your gaming PC to a hosted REST API
 
 Run TSM Desktop on the gaming PC and enable AppHelper for your Forever installation and market. From the extracted project folder, run the following in PowerShell. Replace the example URL with the **full HTTPS upload endpoint** supplied by your host, including its path.
@@ -22,13 +24,14 @@ For repeated launches, put `WOW_UPLOAD_URL=https://auction.example.com/api/scans
 
 ### Test locally with Docker Compose
 
-From the project folder with Docker running, use:
+From the project folder with Docker running, initialize the server token on first use and start the dashboard.
 
 ```sh
-docker compose up -d --wait
+python3 start.py --init-only
+docker compose up -d --build --wait
 ```
 
-On a fresh checkout, run `python3 start.py --init-only` first (`py -3 start.py --init-only` on Windows) to generate the upload token in `.env`. Compose builds the dashboard image from the local Dockerfile on each `up`. The command returns once the dashboard passes its health check.
+On Windows, use `py -3 start.py --init-only`. Initialization finishes silently and creates `.env` beside `start.py` if the file is missing. Use its `WOW_UPLOAD_TOKEN` value at the gaming PC's bearer-token prompt. For subsequent server updates, run just the Compose command. The `--wait` flag makes the command return after the dashboard passes its health check.
 
 Open **http://127.0.0.1:8765/**. For a local upload test, use **http://127.0.0.1:8765/api/scans** as the client's upload URL. Run `docker compose logs -f dashboard` to follow the logs, or `docker compose down` to stop the scanner and keep its data.
 
@@ -60,13 +63,18 @@ The planner looks up to four intermediate sourcing levels deep. At each level it
 
 ## Connect your characters and check stock
 
-Install or update the bundled add-on on the gaming PC. For the default Mac path, run this from the scanner folder.
+### Install or update the gaming PC add-on
+
+Extract the current scanner package on the gaming PC. Run the commands below from that folder, using the path to your active `_forever_` installation. The installer copies **WoW Auction Sync** into `Interface/AddOns` and preserves the existing scan queue. If an older uploader is running, stop it with `Ctrl+C` and restart it from the updated folder.
+
+On macOS, these commands use the default game path. Replace the example URL with your scanner's domain.
 
 ```sh
 python3 client/sync.py install --wow-dir "/Applications/World of Warcraft/_forever_"
+python3 start.py client --wow-dir "/Applications/World of Warcraft/_forever_" --server https://auction.example.com
 ```
 
-On Windows, use PowerShell and your actual game location.
+On Windows, use PowerShell and replace the game path and server URL with yours.
 
 ```powershell
 $game = 'C:\Program Files (x86)\World of Warcraft\_forever_'
@@ -74,11 +82,33 @@ py -3 client/sync.py install --wow-dir "$game"
 py -3 start.py client --wow-dir "$game" --server https://auction.example.com
 ```
 
-1. Enable **WoW Auction Sync**. On each main or alt, run `/wamsync roster` and `/reload`. Include characters with empty profession slots. If prompted, expand the sections in the Skills pane and run the command again.
-2. Open each character’s own profession window, run `/wamsync recipes`, then `/reload`. This identifies ready-to-craft recipes and refines the catalog with in-game data.
-3. At a faction capital auction house, run `/wamsync full`. Wait for completion, then `/reload`. When the watcher reports a queue, reload to load it, open the auction house, run `/wamsync scan`, wait for completion and reload to export the results.
+These commands use the bundled server's base URL so the PC can download targeted scan queues. If your host supplied a full upload endpoint instead, use the [upload-only client command](#upload-from-your-gaming-pc-to-a-hosted-rest-api).
 
-The gaming PC uploader includes the add-on exports in the next database update and retrieves the scan queue in scanner base URL mode when the add-on is installed. For an existing portable bundle, use `python3 client/sync.py sync --bundle scan.json.gz --server URL` with the server token in the environment.
+### Save your first scan
+
+1. Enable **WoW Auction Sync** in WoW. If you updated it while logged in, type `/reload` to load the new code.
+2. On each main or alt, run `/wamsync roster`, including characters with free profession slots. If prompted, expand the Skills pane sections and repeat. Open each character's own profession windows and run `/wamsync recipes` in each one. Type `/reload` to write those records to disk.
+3. At your faction capital's auction house, run `/wamsync full` and keep the auction house open. When chat says **Scan complete. Type /reload to save.**, type `/reload`. The running PC uploader checks for changes every 15 seconds by default. Check its terminal for the upload receipt and the dashboard's **Last upload** time for confirmation.
+4. For a targeted scan, wait for the uploader to report **Updated queue** with a positive item count. Type `/reload` to load the queue, open the auction house, run `/wamsync scan`, and type `/reload` after completion to export the results.
+
+The in-game status bar shows elapsed time. The add-on posts progress to chat **every 10 seconds** while a scan is active. A full scan first waits for listings, then counts rows read. A targeted scan counts items checked and shows the current item ID. Use `/wamsync status` for an immediate update or the last outcome in the current session. Closing the auction house, running `/wamsync cancel`, or reaching a timeout discards the unfinished scan and keeps the previous completed observations.
+
+### Saved database and upload troubleshooting
+
+WoW writes the add-on's account data on `/reload` or logout. Look in the active WoW installation on the gaming PC.
+
+```text
+_forever_/WTF/Account/<account>/SavedVariables/WowAuctionSync.lua
+```
+
+| What you see | What to check |
+| --- | --- |
+| **No saved database in WowAuctionSync.lua** | Update the add-on and restart the uploader from the same extracted package. In WoW, run `/reload`, `/wamsync roster`, then `/reload` again. Check the file above for your active account. The updated uploader can skip an empty account file when another account or TSM has data for the selected market. |
+| **Waiting for in-game data** | Run `/wamsync status` and compare its region and market with the uploader's settings. Confirm that `--wow-dir` points to the installation you play. After a roster capture or completed scan, use `/reload` and check the file path printed by the uploader. |
+| **Waiting for TSM Desktop AppHelper prices** | Open TSM Desktop and check that AppHelper is enabled and has synced the selected Forever market. The `start.py client` watcher needs a populated price book for that market before uploading. |
+| **Scan complete** in chat but no new checked prices on the dashboard | Type `/reload` and keep the PC uploader running. After an upload receipt, open **Market prices** and check **Checked average** and **Checked units** for a scanned item. |
+
+For an existing portable bundle, use `python3 client/sync.py sync --bundle scan.json.gz --server URL` with the server token in the environment.
 
 ## Simulate auction house reagent prices
 
@@ -113,5 +143,3 @@ cargo build --release --locked
 The network integration test uses a temporary data directory and an ephemeral loopback port. It skips when the environment forbids opening a listener. `pandoc-lua` can also run the Lua fixture. Run `cargo test --locked live_forever_market -- --ignored` for a live public-feed check. The optional dashboard interaction fixture uses Node and jsdom 16.7, and runs with `node tests/dashboard.cjs` when jsdom is available.
 
 See `wow-auction-monitor-rebuild-guide.md` for the API, configuration, wire format, pricing formulas and player workflow. Its original release checksum and test counts describe the reference release. This source package is an independent rebuild.
-
-# wow-auction

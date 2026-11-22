@@ -6,11 +6,20 @@ from disenchant import import_tables
 from lua_data import array, named_table
 
 
+SAVED_DATABASES = {
+    "wowauctionsync.lua": "WowAuctionSyncDB",
+    "wowauctionmonitor.lua": "WowAuctionMonitorDB",
+}
+
+
 def inputs(game):
     addons = game / "Interface" / "AddOns"
     files = set()
-    for name in ("WowAuctionSync", "WowAuctionMonitor"):
-        files.update(game.glob(f"WTF/Account/*/SavedVariables/{name}.lua"))
+    files.update(
+        p
+        for p in game.glob("WTF/Account/*/SavedVariables/*")
+        if p.name.lower() in SAVED_DATABASES and p.is_file()
+    )
     files.update((addons / "TradeSkillMaster_AppHelper").rglob("AppData*.lua"))
     base = addons / "TradeSkillMaster" / "LibTSMData"
     files.update(
@@ -121,6 +130,7 @@ def export(files, region, market):
     )
     maximum_yields = {}
     checks, recipes, conflicts, tables = {}, {}, set(), {}
+    saved_path = None
     for path, _, _ in sorted(files, key=lambda f: (f[1], f[0])):
         text = path.read_text(encoding="utf-8-sig")
         if path.name.startswith("AppData"):
@@ -131,11 +141,19 @@ def export(files, region, market):
         if path.name in ("Disenchant.lua", "NonDisenchantable.lua"):
             tables[path.name] = text
             continue
-        db = named_table(text, path.stem + "DB")
+        saved_path = path
+        name = SAVED_DATABASES[path.name.lower()]
+        db = named_table(text, name)
         if db is None:
-            raise ValueError(f"No saved database in {path.name}")
+            # An unused account can have only comments, whitespace, or a nil assignment.
+            content = re.sub(r"--[^\n]*", "", text).strip()
+            if not content or re.fullmatch(re.escape(name) + r"\s*=\s*nil\s*;?", content):
+                continue
+            raise ValueError(f"Expected the saved table {name} in {path}.")
+        if not db:
+            continue
         if db.get("version") != 1:
-            raise ValueError("Unsupported SavedVariables version")
+            raise ValueError(f"Unsupported SavedVariables version in {path}")
         if db.get("local_scan_failed") or db.get("warnings"):
             raise ValueError("Saved scan contains warnings")
         full = db.get("markets", {}).get(market, {})
@@ -195,6 +213,18 @@ def export(files, region, market):
     if len(tables) == 2:
         snap.update(
             import_tables(tables["Disenchant.lua"], tables["NonDisenchantable.lua"])
+        )
+    if saved_path and not (
+        snap.get("newest_price_at")
+        or checks
+        or snap["character_levels"]
+        or snap["items"]
+        or snap.get("estimate_prices")
+    ):
+        raise ValueError(
+            f"Waiting for in-game data for {region} / {market}. Checked {saved_path}. "
+            "Enable WoW Auction Sync, run "
+            "/wamsync roster or finish /wamsync full, then /reload in WoW."
         )
     if not files:
         raise ValueError(
