@@ -28,6 +28,7 @@ const route = {
   recipe_id: "b",
   profession: "Blacksmithing",
   requirements: { profession: "Blacksmithing", character_level: 20 },
+  required_character_level: 20,
   characters: ["Ada"],
   inputs: [
     {
@@ -57,6 +58,7 @@ items[5].routes = [
     name: "Green Lens",
     kind: "craft_disenchant",
     profession: "Engineering",
+    required_character_level: null,
     ready: false,
     advice: "Level an alt with Engineering.",
     profit: 500,
@@ -73,6 +75,7 @@ items[6].routes = [
   {
     ...route,
     name: "Charm",
+    required_character_level: 35,
     timing: {
       active_seconds: 24,
       elapsed_seconds: 24,
@@ -207,6 +210,28 @@ async function runSimulation() {
   };
   assert.equal(new URL(d.querySelector("#tsm-desktop").href).port, "5800");
   assert.match(d.querySelector("#client-upload").textContent, /Last upload/);
+  filter("level", "19");
+  assert.equal(d.querySelectorAll(".rowname").length, 0);
+  filter("level", "20");
+  assert.equal(d.querySelectorAll(".rowname").length, 1);
+  assert.match(
+    d.querySelector("#body").textContent,
+    /Buckle.*Character level 20/,
+  );
+  assert.doesNotMatch(panel.textContent, /Level an alt with Engineering/);
+  filter("level", "35");
+  assert.equal(d.querySelectorAll(".rowname").length, 2);
+  assert.match(
+    d.querySelector("#body").textContent,
+    /Chained.*Character level 35/,
+  );
+  filter("level", "");
+  filter("sort", "level");
+  const sorted = [...d.querySelectorAll("#body tr")];
+  assert.equal(sorted.length, 3);
+  assert.match(sorted[0].textContent, /Character level 20/);
+  assert.match(sorted[1].textContent, /Character level 35/);
+  assert.match(sorted[2].textContent, /Character level unknown/);
   filter("sort", "gold_per_hour");
   assert.match(d.querySelector("#body tr").textContent, /Chained/);
   assert.match(panel.textContent, /Highest projected repeat gold per hour/);
@@ -316,6 +341,12 @@ async function runSimulation() {
   d.querySelector("#sim-close").click();
   w.location.hash = "#opportunities";
   await wait();
+  filter("level", "20");
+  assert.equal(d.querySelectorAll(".rowname").length, 1);
+  d.querySelector("#refresh").click();
+  await wait();
+  assert.equal(d.querySelectorAll(".rowname").length, 1);
+  assert.match(d.querySelector("#body").textContent, /Buckle/);
   assert.equal(d.querySelector("#batchSize").value, "5");
   assert.equal(JSON.parse(w.sessionStorage.wam).batchSize, 5);
   w.location.hash = "#professions";

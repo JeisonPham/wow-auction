@@ -480,6 +480,7 @@ fn plan(
         }
     }
     for route in routes.values_mut().flatten() {
+        route["required_character_level"] = crate::professions::route_level(route).into();
         if let Some(timing) = timing::estimate(route) {
             route["timing"] = timing;
         }

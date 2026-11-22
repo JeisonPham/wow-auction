@@ -179,6 +179,8 @@ fn unlearned_catalog_recipe_is_priced_without_upload() {
     assert_eq!(dynamite["quantity"], 3);
     assert_eq!(dynamite["quantity_min"], 1);
     assert_eq!(dynamite["quantity_max"], 5);
+    assert_eq!(dynamite["required_character_level"], 10);
+    assert_eq!(belt["required_character_level"], 1);
     assert_eq!(belt["ready"], false);
     assert_eq!(belt["cost"], 6);
     assert_eq!(belt["timing"]["assumed_cast"], false);
@@ -194,6 +196,42 @@ fn unlearned_catalog_recipe_is_priced_without_upload() {
         .contains("Blacksmithing 30"));
     assert!(r["catalog"]["recipes"].as_u64().unwrap() > 2000);
     assert_eq!(r["catalog"]["characters"], 0);
+}
+
+#[test]
+fn character_level_combines_recipe_and_rank_and_keeps_unknowns_distinct() {
+    let mut v = fixture();
+    for (req, expected) in [
+        (json!({"profession":"Engineering","skill":75}), Some(1)),
+        (json!({"profession":"Engineering","skill":76}), Some(10)),
+        (json!({"profession":"Engineering","skill":150}), Some(10)),
+        (json!({"profession":"Engineering","skill":151}), Some(20)),
+        (json!({"profession":"Tailoring","skill":225}), Some(20)),
+        (json!({"profession":"Tailoring","skill":226}), Some(35)),
+        (json!({"profession":"Cooking","skill":175}), Some(10)),
+        (json!({"profession":"First Aid","skill":175}), Some(1)),
+        (
+            json!({"profession":"Engineering","skill":125,"character_level":30}),
+            Some(30),
+        ),
+        (
+            json!({"profession":"Engineering","skill":300,"character_level":10}),
+            Some(35),
+        ),
+        (
+            json!({"profession":"Poisons","skill":1,"character_level":20}),
+            Some(20),
+        ),
+        (json!({"profession":"Engineering"}), None),
+        (json!({"profession":"Poisons","skill":100}), None),
+    ] {
+        v["snapshot"]["recipe_requirements"]["buckle"] = req;
+        let r = report(&v, &Default::default(), 101);
+        assert_eq!(
+            recipe_route(&r, 2000, "buckle", "craft")["required_character_level"],
+            json!(expected)
+        );
+    }
 }
 #[test]
 fn craft_exit_costs_and_profession_assignments() {
@@ -216,6 +254,7 @@ fn craft_exit_costs_and_profession_assignments() {
     assert_eq!(de["quantity_max"], 5);
     assert_eq!(de["timing"]["end_de_seconds"], 3.0);
     assert_eq!(de["net_unit_value"], 101.5_f64 * 323.0 / 400.0);
+    assert_eq!(de["required_character_level"], 1);
     assert_eq!(
         recipe_route(&r, 2000, "buckle", "craft")["net_unit_value"],
         100
@@ -298,7 +337,7 @@ fn chains_craft_disenchant_reuse_drops_then_craft_and_vendor() {
         {"id":"r","output":12,"name":"Ring","quantity":1,"mats":[[11,2]],"characters":["Ada"]},
         {"id":"b","output":15,"name":"Bauble","quantity":1,"mats":[[13,2],[14,1]],"characters":["Bea"]}
     ]);
-    s["recipe_requirements"] = json!({"f":{"profession":"Blacksmithing","cast_seconds":2.5,"cooldown_seconds":30},"r":{"profession":"Blacksmithing","cast_seconds":4},"b":{"profession":"Tailoring","cast_seconds":5}});
+    s["recipe_requirements"] = json!({"f":{"profession":"Blacksmithing","skill":175,"cast_seconds":2.5,"cooldown_seconds":30},"r":{"profession":"Blacksmithing","skill":70,"cast_seconds":4},"b":{"profession":"Tailoring","skill":80,"cast_seconds":5}});
     s["professions"] =
         json!({"Ada":{"Blacksmithing":200},"Bea":{"Enchanting":100,"Tailoring":100}});
     s["disenchant"] = json!([{"class":4,"quality":2,"min_level":1,"max_level":20,"skill":25,"mats":{"13":0.5,"14":0.25}}]);
@@ -309,6 +348,8 @@ fn chains_craft_disenchant_reuse_drops_then_craft_and_vendor() {
     let routes = item(&r, 15)["routes"].as_array().unwrap();
     assert_eq!(routes[0]["cost"], 900);
     let c = routes.iter().find(|x| x["stages"].is_array()).unwrap();
+    assert_eq!(routes[0]["required_character_level"], 10);
+    assert_eq!(c["required_character_level"], 20);
     assert_eq!(
         (c["cost"].as_u64(), c["profit"].as_u64()),
         (Some(60), Some(140))
@@ -329,6 +370,23 @@ fn chains_craft_disenchant_reuse_drops_then_craft_and_vendor() {
     assert_eq!(c["expected_inputs"], true);
     assert_eq!(c["ready"], true);
     assert_eq!(c["stock"], "estimated");
+    let mut higher_de = v.clone();
+    higher_de["snapshot"]["disenchant"][0]["skill"] = json!(226);
+    let higher = report(&higher_de, &Default::default(), 101);
+    assert_eq!(
+        item(&higher, 15)["routes"][1]["required_character_level"],
+        35
+    );
+    assert_eq!(
+        recipe_route(&higher, 12, "r", "craft_disenchant")["required_character_level"],
+        35
+    );
+    higher_de["snapshot"]["recipe_requirements"]["f"]["skill"] = Value::Null;
+    let unknown = report(&higher_de, &Default::default(), 101);
+    assert_eq!(
+        item(&unknown, 15)["routes"][1]["required_character_level"],
+        Value::Null
+    );
     assert!(r["scan_queue"].as_array().unwrap().contains(&json!(10)));
     v["snapshot"]["professions"]["Bea"]["Enchanting"] = 1.into();
     assert_eq!(

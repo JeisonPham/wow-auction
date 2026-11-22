@@ -365,7 +365,8 @@ function render() {
           r.name.toLowerCase().includes(p.search.trim().toLowerCase())) &&
         (!p.profession || prof === p.profession) &&
         (!p.level ||
-          Number(r.requirements?.character_level || 0) <= Number(p.level))
+          (r.required_character_level != null &&
+            r.required_character_level <= Number(p.level)))
       )
         rows.push({ i, r, key: i.id + "-" + index });
     }
@@ -388,7 +389,7 @@ function render() {
       estimate: x.i.estimate,
       units: x.i.listed_units,
       stock: { verified: 2, estimated: 1, insufficient: 0 }[x.r?.stock],
-      level: -(x.r?.requirements?.character_level || 0),
+      level: -(x.r?.required_character_level ?? Infinity),
     })[p.sort] ?? -Infinity;
   rows.sort(
     (a, b) =>
@@ -439,9 +440,20 @@ function render() {
           ]
         : [
             esc(routeLabel(r)) +
-              (r.profession
-                ? "<br><small>" + esc(r.profession) + "</small>"
-                : ""),
+              (r.kind === "vendor"
+                ? ""
+                : "<br><small>" +
+                  esc(
+                    [
+                      r.profession,
+                      r.required_character_level == null
+                        ? "Character level unknown"
+                        : "Character level " + r.required_character_level,
+                    ]
+                      .filter(Boolean)
+                      .join(" · "),
+                  ) +
+                  "</small>"),
             money(r.cost),
             '<span class="profit">' + money(r.profit) + "</span>",
             duration(r.timing?.elapsed_seconds) +

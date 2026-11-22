@@ -1,4 +1,7 @@
-use crate::scan::{Recipe, Snapshot};
+use crate::{
+    catalog::FOREVER,
+    scan::{Recipe, Snapshot},
+};
 use serde_json::Value;
 use std::collections::BTreeSet;
 
@@ -13,6 +16,42 @@ const PRIMARY: [&str; 9] = [
     "Skinning",
     "Tailoring",
 ];
+
+fn positive(value: &Value) -> Option<u64> {
+    value
+        .as_u64()
+        .or_else(|| value.as_str()?.parse().ok())
+        .filter(|&n| n > 0)
+}
+
+fn craft_level(req: &Value) -> Option<u64> {
+    let skill_level = req["profession"]
+        .as_str()
+        .and_then(|p| FOREVER.rank_level(p, positive(&req["skill"])?));
+    positive(&req["character_level"]).max(skill_level)
+}
+
+pub fn route_level(route: &Value) -> Option<u64> {
+    let enchanting = |skill: &Value| FOREVER.rank_level("Enchanting", positive(skill)?);
+    let mut level = match route["kind"].as_str()? {
+        "vendor" => 1,
+        "disenchant" => enchanting(&route["requirements"]["skill"])?,
+        "craft" | "craft_auction" => craft_level(&route["requirements"])?,
+        "craft_disenchant" => {
+            craft_level(&route["requirements"])?.max(enchanting(&route["enchanting_rank"])?)
+        }
+        _ => return None,
+    };
+    for stage in route["stages"].as_array().into_iter().flatten() {
+        let stage_level = match stage["action"].as_str()? {
+            "craft" => craft_level(&stage["requirements"])?,
+            "disenchant" => enchanting(&stage["skill"])?,
+            _ => return None,
+        };
+        level = level.max(stage_level);
+    }
+    Some(level)
+}
 
 struct Need<'a> {
     name: &'a str,

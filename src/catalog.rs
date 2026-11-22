@@ -9,6 +9,7 @@ use std::{
 #[derive(Deserialize)]
 pub struct Catalog {
     pub build: String,
+    profession_ranks: BTreeMap<String, Vec<(u64, u64)>>,
     pub disenchant_seconds: f64,
     pub snapshot: Snapshot,
     pub overrides: BTreeMap<u32, BTreeMap<u32, f64>>,
@@ -19,6 +20,14 @@ pub static FOREVER: LazyLock<Catalog> = LazyLock::new(|| {
 });
 
 impl Catalog {
+    pub fn rank_level(&self, profession: &str, skill: u64) -> Option<u64> {
+        self.profession_ranks
+            .get(profession)?
+            .iter()
+            .find(|(cap, _)| (1..=*cap).contains(&skill))
+            .map(|(_, level)| *level)
+    }
+
     pub fn for_player(&self, player: &Snapshot) -> Snapshot {
         let mut result = self.snapshot.clone();
         result.professions.clone_from(&player.professions);

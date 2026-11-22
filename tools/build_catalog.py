@@ -46,6 +46,28 @@ SLOTS = {
 }
 
 
+def profession_ranks(prof):
+    """Map the skill cap of each rank to the character level needed to reach it."""
+    ranks = {}
+    for p in prof["professions"]:
+        if not p["ranks"]:
+            continue
+        levels = []
+        level = 1
+        for rank in sorted(p["ranks"], key=lambda r: r["cap"]):
+            # Expert Cooking still needs Journeyman. The artisan quests and
+            # Tailoring trainer are missing level fields in the pinned data.
+            gate = rank.get("lv")
+            if gate is None and rank["cap"] == 300 and p["name"] in (
+                "Tailoring", "Cooking", "First Aid"
+            ):
+                gate = 35
+            level = max(level, gate or 1)
+            levels.append((rank["cap"], level))
+        ranks[p["name"]] = levels
+    return ranks
+
+
 def build(folder):
     data = named_table((folder / "Data.lua").read_text(), "ns.Data")
     prof = json.loads((folder / "professions.json").read_text())
@@ -172,6 +194,7 @@ def build(folder):
     }
     return dict(
         build=data["build"],
+        profession_ranks=profession_ranks(prof),
         disenchant_seconds=entries[("Enchanting", 13262)][0]["ct"],
         snapshot=dict(
             recipes=recipes,
