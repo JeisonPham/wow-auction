@@ -17,22 +17,32 @@ const PRIMARY: [&str; 9] = [
     "Tailoring",
 ];
 
-fn positive(value: &Value) -> Option<u64> {
-    value
-        .as_u64()
-        .or_else(|| value.as_str()?.parse().ok())
-        .filter(|&n| n > 0)
+fn number(value: &Value) -> Option<u64> {
+    value.as_u64().or_else(|| value.as_str()?.parse().ok())
+}
+
+fn craft_level_floor(req: &Value) -> Option<u64> {
+    let skill_level = req["profession"]
+        .as_str()
+        .and_then(|p| FOREVER.rank_level(p, number(&req["skill"])?));
+    skill_level
+        .max(number(&req["character_level"]))
+        .max(number(&req["pattern_character_level"]))
+        .max(number(&req["pattern_quest_level"]))
+        .filter(|&level| level > 0)
 }
 
 fn craft_level(req: &Value) -> Option<u64> {
-    let skill_level = req["profession"]
-        .as_str()
-        .and_then(|p| FOREVER.rank_level(p, positive(&req["skill"])?));
-    positive(&req["character_level"]).max(skill_level)
+    if !req["pattern"].is_null() || !req["pattern_id"].is_null() {
+        // A verified zero means using the pattern requires no character level.
+        // Missing data cannot establish that the character can learn this recipe.
+        number(&req["pattern_character_level"])?;
+    }
+    craft_level_floor(req)
 }
 
 pub fn route_level(route: &Value) -> Option<u64> {
-    let enchanting = |skill: &Value| FOREVER.rank_level("Enchanting", positive(skill)?);
+    let enchanting = |skill: &Value| FOREVER.rank_level("Enchanting", number(skill)?);
     let mut level = match route["kind"].as_str()? {
         "vendor" => 1,
         "disenchant" => enchanting(&route["requirements"]["skill"])?,
@@ -260,7 +270,7 @@ fn craft_need<'a>(r: &'a Recipe, req: &'a Value) -> Need<'a> {
             .unwrap_or("the crafting profession"),
         skill: req["skill"].as_u64().unwrap_or(0),
         category: req["category"].as_str().unwrap_or("primary"),
-        level: req["character_level"].as_u64().unwrap_or(0),
+        level: craft_level_floor(req).unwrap_or(0),
         recipe: Some(r),
     }
 }

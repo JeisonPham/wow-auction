@@ -89,6 +89,11 @@ items[6].routes = [
         quantity: 2,
         runs: 2,
         inputs: [{ name: "Ore", quantity: 6 }],
+        requirements: {
+          pattern: "Plans: Ring",
+          pattern_character_level: 30,
+          pattern_quest_level: 35,
+        },
         advice: "Ada is ready.",
       },
       {
@@ -172,6 +177,7 @@ async function runSimulation() {
   assert.equal(d.querySelectorAll("#body>tr").length, 40);
   d.querySelector(".rowname").click();
   d.querySelector("[data-sim-item]").click();
+  assert.equal(d.querySelector("#sim-gold").disabled, true);
   assert.equal(d.querySelector("#sim-yield-min").disabled, true);
   assert.match(d.querySelector("#sim-inputs").textContent, /5.5cIn-game scan/);
   d.querySelector("#sim-volatility").value = 0;
@@ -241,6 +247,10 @@ async function runSimulation() {
   assert.match(d.querySelector(".route").textContent, /Disenchant 2 × Ring/);
   assert.match(
     d.querySelector(".route").textContent,
+    /Plans: Ring · Level 30 to learn · Level 35 to accept the pattern quest/,
+  );
+  assert.match(
+    d.querySelector(".route").textContent,
     /Craft 1 × Charm from 1 × Dust/,
   );
   d.querySelector("[data-copy]").click();
@@ -302,9 +312,18 @@ async function runSimulation() {
   assert.match(copied, /Ada/);
   d.querySelector("[data-sim-craft]").click();
   assert.match(d.querySelector("#sim-stock").textContent, /Ore needs 6/);
+  const bankroll = d.querySelector("#sim-gold");
+  assert.equal(bankroll.disabled, false);
+  bankroll.value = "1.0001";
   const projected = await runSimulation();
   assert.match(projected, /Mean batch cost64c/);
   assert.match(projected, /Mean batch profit1s 36c/);
+  assert.match(
+    projected,
+    /Full Kelly target before rounding or stock limits1g 1c \(100%/,
+  );
+  assert.match(projected, /Suggested spend at current quotes0c/);
+  assert.match(projected, /Checked reagent stock limits this order/);
   d.querySelector("#sim-volatility").value = 25;
   d.querySelector("#sim-volatility").dispatchEvent(
     new w.Event("input", { bubbles: true }),
@@ -324,6 +343,7 @@ async function runSimulation() {
   const minYield = d.querySelector("#sim-yield-min"),
     maxYield = d.querySelector("#sim-yield-max");
   assert.equal(minYield.value, "1");
+  assert.equal(bankroll.value, "1.0001");
   assert.equal(maxYield.value, "1");
   minYield.value = "6";
   maxYield.value = "5";

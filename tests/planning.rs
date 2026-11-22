@@ -180,6 +180,24 @@ fn unlearned_catalog_recipe_is_priced_without_upload() {
     assert_eq!(dynamite["quantity_min"], 1);
     assert_eq!(dynamite["quantity_max"], 5);
     assert_eq!(dynamite["required_character_level"], 10);
+    let handbook = recipe_route(&r, 20844, "25347", "craft");
+    assert_eq!(handbook["requirements"]["pattern_id"], 21302);
+    assert_eq!(handbook["required_character_level"], 60);
+    let bracers = recipe_route(&r, 12425, "16649", "craft");
+    assert_eq!(bracers["requirements"]["pattern_character_level"], 0);
+    assert_eq!(bracers["requirements"]["pattern_quest_level"], 50);
+    assert_eq!(bracers["required_character_level"], 50);
+    // The finished armor kit requires 40 to use. Its pattern only needs the profession rank.
+    assert_eq!(
+        recipe_route(&r, 252463, "1255073", "craft")["required_character_level"],
+        20
+    );
+    // A tradable quest reward and a bound pattern with a vendor source may both bypass the quest.
+    for (id, spell) in [(3728, "3399"), (3726, "3397")] {
+        let recipe = recipe_route(&r, id, spell, "craft");
+        assert!(recipe["requirements"].get("pattern_quest_level").is_none());
+        assert_eq!(recipe["required_character_level"], 10);
+    }
     assert_eq!(belt["required_character_level"], 1);
     assert_eq!(belt["ready"], false);
     assert_eq!(belt["cost"], 6);
@@ -205,6 +223,22 @@ fn character_level_combines_recipe_and_rank_and_keeps_unknowns_distinct() {
         (json!({"profession":"Engineering","skill":75}), Some(1)),
         (json!({"profession":"Engineering","skill":76}), Some(10)),
         (json!({"profession":"Engineering","skill":150}), Some(10)),
+        (
+            json!({"profession":"Engineering","skill":150,"pattern":"Pattern","pattern_character_level":49,"pattern_quest_level":40}),
+            Some(49),
+        ),
+        (
+            json!({"profession":"Engineering","skill":226,"pattern":"Pattern","pattern_character_level":1}),
+            Some(35),
+        ),
+        (
+            json!({"profession":"Engineering","skill":150,"pattern":"Pattern","pattern_character_level":null}),
+            None,
+        ),
+        (
+            json!({"profession":"Engineering","skill":150,"pattern":"Pattern"}),
+            None,
+        ),
         (json!({"profession":"Engineering","skill":151}), Some(20)),
         (json!({"profession":"Tailoring","skill":225}), Some(20)),
         (json!({"profession":"Tailoring","skill":226}), Some(35)),
@@ -387,6 +421,21 @@ fn chains_craft_disenchant_reuse_drops_then_craft_and_vendor() {
         item(&unknown, 15)["routes"][1]["required_character_level"],
         Value::Null
     );
+    let mut gated = v.clone();
+    let fitting = &mut gated["snapshot"]["recipe_requirements"]["f"];
+    fitting["pattern"] = json!("Plans: Fitting");
+    fitting["pattern_character_level"] = json!(48);
+    gated["snapshot"]["recipes"][0]["characters"] = json!([]);
+    gated["snapshot"]["character_levels"] = json!({"Ada":35,"Bea":35});
+    let gated_report = report(&gated, &Default::default(), 101);
+    let paths = &item(&gated_report, 15)["routes"];
+    assert_eq!(paths[0]["required_character_level"], 10);
+    assert_eq!(paths[1]["required_character_level"], 48);
+    assert_eq!(paths[1]["ready"], false);
+    assert!(paths[1]["stages"][0]["advice"]
+        .as_str()
+        .unwrap()
+        .contains("reach character level 48"));
     assert!(r["scan_queue"].as_array().unwrap().contains(&json!(10)));
     v["snapshot"]["professions"]["Bea"]["Enchanting"] = 1.into();
     assert_eq!(

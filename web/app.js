@@ -152,15 +152,39 @@ function setup() {
   );
   render();
 }
-const reqText = (r) =>
-  Object.entries(r.requirements || {})
+function patternText(req = {}) {
+  const { pattern, pattern_id, pattern_character_level, pattern_quest_level } =
+    req;
+  if (!pattern && !pattern_id) return "";
+  const parts = [pattern || "Pattern #" + pattern_id];
+  if (pattern_character_level == null)
+    parts.push("Pattern learning level unknown");
+  else if (pattern_character_level > 0)
+    parts.push("Level " + pattern_character_level + " to learn");
+  if (pattern_quest_level > 0)
+    parts.push("Level " + pattern_quest_level + " to accept the pattern quest");
+  return parts.join(" · ");
+}
+function reqText(r) {
+  const req = r.requirements || {};
+  const fields = Object.entries(req)
+    .filter(
+      ([k]) =>
+        ![
+          "pattern",
+          "pattern_id",
+          "pattern_character_level",
+          "pattern_quest_level",
+        ].includes(k),
+    )
     .map(
       ([k, v]) =>
         k.replaceAll("_", " ") +
         " " +
         (typeof v === "object" ? JSON.stringify(v) : v),
-    )
-    .join(" · ");
+    );
+  return [...fields, patternText(req)].filter(Boolean).join(" · ");
+}
 const isCraft = (r) =>
   ["craft", "craft_disenchant", "craft_auction"].includes(r.kind);
 const destroys = (r) =>
@@ -201,7 +225,7 @@ function pathSteps(r, batch) {
       " (" +
       amount(s.runs) +
       " recipe runs). " +
-      (s.advice || "")
+      [patternText(s.requirements || {}), s.advice].filter(Boolean).join(". ")
     );
   });
   result.push(
@@ -653,7 +677,59 @@ function openSimulation(name, model, shortages, at) {
     : "";
   $("sim-volatility").value = saved.simulation?.volatility ?? 10;
   $("sim-trials").value = saved.simulation?.trials ?? 5000;
+  const canSize = !model.unitOnly && model.proceeds != null;
+  $("sim-gold-label").hidden = $("sim-gold").disabled = !canSize;
+  $("sim-gold").value = canSize ? (saved.simulation?.gold ?? "") : "";
   $("simulation").showModal();
+}
+function simulationStats(stats) {
+  return (
+    "<dl>" +
+    stats
+      .map(
+        ([label, value]) =>
+          "<dt>" + esc(label) + "</dt><dd>" + esc(value) + "</dd>",
+      )
+      .join("") +
+    "</dl>"
+  );
+}
+function kellyResults(k, batch) {
+  if (k.unavailable)
+    return "<h3>Kelly sizing</h3><p>" + esc(k.unavailable) + "</p>";
+  const percent = k.fraction.toLocaleString(undefined, {
+    style: "percent",
+    maximumFractionDigits: 2,
+  });
+  const order =
+    k.batches.toLocaleString() +
+    (k.batches === 1 ? " batch" : " batches") +
+    " × " +
+    batch.toLocaleString() +
+    (batch === 1 ? " craft" : " crafts");
+  const stats = [
+    ["Suggested spend at current quotes", money(k.spend)],
+    ["Order size", order],
+    ["Gold left after purchase", money(k.remaining)],
+    [
+      "Full Kelly target before rounding or stock limits",
+      money(k.target) + " (" + percent + " of starting gold)",
+    ],
+    ["Cost per batch at current quotes", money(k.quote)],
+  ];
+  let reason = "";
+  if (k.fraction === 0)
+    reason = "The simulated returns favor keeping your gold. ";
+  else if (k.stockLimited) reason = "Checked reagent stock limits this order. ";
+  else if (k.batches === 0)
+    reason = "No whole batch fits both the budget and the growth objective. ";
+  return (
+    "<h3>Kelly sizing</h3>" +
+    simulationStats(stats) +
+    "<p class='hint'>" +
+    reason +
+    "Sizing treats this batch’s simulated percentage return as the return on the whole order in each trial. Whole batches use current quotes and reserve postage for the maximum output.</p>"
+  );
 }
 function showSimulationResults(result, trials) {
   const { average, median, p5, p95, low, high, bins, profitChance } = result;
@@ -691,14 +767,11 @@ function showSimulationResults(result, trials) {
     stats.push(["Mean batch gold/hour", hourly(result.goldPerHour)]);
   const peak = Math.max(...bins);
   $("sim-result").innerHTML =
-    "<dl>" +
-    stats
-      .map(
-        ([label, value]) =>
-          "<dt>" + esc(label) + "</dt><dd>" + esc(value) + "</dd>",
-      )
-      .join("") +
-    "</dl>" +
+    (result.kelly
+      ? kellyResults(result.kelly, simulationModel.batch) +
+        "<h3>Simulated batch</h3>"
+      : "") +
+    simulationStats(stats) +
     (low === high
       ? ""
       : "<p>" +
@@ -755,7 +828,17 @@ $("sim-form").onsubmit = (event) => {
     else ranges[model.yield.key] = { min, max };
     model.yield = { ...model.yield, min, max };
   }
-  saved.simulation = { volatility, trials };
+  const gold = $("sim-gold");
+  if (!gold.disabled && gold.value !== "") {
+    model.bankroll = Math.round(gold.valueAsNumber * 10000);
+    if (!Number.isSafeInteger(model.bankroll) || model.bankroll < 0) {
+      $("sim-status").textContent =
+        "Starting gold exceeds the supported copper range.";
+      return;
+    }
+  }
+  saved.simulation = { ...saved.simulation, volatility, trials };
+  if (!gold.disabled) saved.simulation.gold = gold.value;
   save();
   $("sim-status").textContent = "Running simulation…";
   try {

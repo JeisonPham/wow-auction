@@ -1,6 +1,7 @@
 """Rebuild the bundled catalog from Forever data files listed in src/data/SOURCES.md."""
 
 import argparse
+import csv
 import gzip
 import json
 import re
@@ -13,9 +14,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "client"))
 from lua_data import array, named_table
 
+KB_URL = "https://raw.githubusercontent.com/gBlaku/wow-forever-kb/f93674b86e3a9d2a1f349bc942da7cb9b8ef76dd"
 URLS = {
     "Data.lua": "https://raw.githubusercontent.com/masterred92/DwarfExplorersBible/f56c16a72671143cb3c86b0e62462fac558c4bf6/Data.lua",
-    "items.json": "https://raw.githubusercontent.com/gBlaku/wow-forever-kb/f93674b86e3a9d2a1f349bc942da7cb9b8ef76dd/items.json",
+    "items.json": f"{KB_URL}/items.json",
+    "item-details.json": f"{KB_URL}/api/items.json",
+    "item_sources.csv": f"{KB_URL}/api/item_sources.csv",
     "professions.json": "https://raw.githubusercontent.com/peligwen/peligaming/a8a26d10c6d1dec3acfc677010f914d7cd0dc7ee/public/tools/wow-forever/data/professions/professions.json",
     "Disenchant.lua": "https://raw.githubusercontent.com/ProfessionsForever/Professions_Forever/94e0dac68c61dd56d67bcbec4ea5e2ce04068caa/Data/Disenchant.lua",
 }
@@ -68,9 +72,51 @@ def profession_ranks(prof):
     return ranks
 
 
+def pattern_requirements(folder, prof):
+    names = {
+        r["ri"]: prof["items"].get(str(r["ri"]), [f"Item {r['ri']}"])[0]
+        for p in prof["professions"]
+        for r in p["recipes"]
+        if r.get("ri")
+    }
+    details = {
+        row["id"]: row
+        for row in json.loads((folder / "item-details.json").read_text())
+        if row["id"] in names and not row.get("estimated")
+    }
+    quest_only = {
+        id_: []
+        for id_, row in details.items()
+        if row.get("bonding") == "Binds when picked up" and row.get("source_types") == "quest"
+    }
+    with (folder / "item_sources.csv").open(encoding="utf-8-sig", newline="") as f:
+        for source in csv.DictReader(f):
+            id_ = int(source["item_id"])
+            if id_ in quest_only:
+                quest_only[id_].append(source)
+
+    patterns = {}
+    for id_, name in names.items():
+        row = details.get(id_, {})
+        req = dict(
+            pattern_id=id_,
+            pattern=row.get("name", name),
+            pattern_character_level=row.get("required_level"),
+        )
+        sources = quest_only.get(id_)
+        if sources and all(s["kind"] == "quest" and s["min_level"] for s in sources):
+            req["pattern_quest_level"] = min(int(s["min_level"]) for s in sources)
+            factions = {s["extra"] for s in sources}
+            if len(factions) == 1 and factions <= {"Horde", "Alliance"}:
+                req["faction"] = next(iter(factions))
+        patterns[id_] = req
+    return patterns
+
+
 def build(folder):
     data = named_table((folder / "Data.lua").read_text(), "ns.Data")
     prof = json.loads((folder / "professions.json").read_text())
+    patterns = pattern_requirements(folder, prof)
     kb = json.loads((folder / "items.json").read_text())
     items = {}
     for row in kb["items"]:
@@ -135,9 +181,7 @@ def build(folder):
             "u": "Learning source unknown",
         }.get(r.get("s"), "Learning source unknown")
         if r.get("ri"):
-            req["pattern"] = items.get(r["ri"], {}).get(
-                "name", data["names"].get(r["ri"], f"Item {r['ri']}")
-            )
+            req.update(patterns[r["ri"]])
         if r.get("f"):
             req["station"] = r["f"]
         if r.get("lv"):

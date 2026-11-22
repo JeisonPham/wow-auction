@@ -81,6 +81,90 @@ function quantile(sorted, fraction) {
   return sorted[lo] + (sorted[Math.ceil(index)] - sorted[lo]) * (index - lo);
 }
 
+// Full Kelly maximizes mean(log(1 + fraction * return)) for one route.
+// Its derivative decreases with the fraction, so bisection finds the maximum.
+function kellyFraction(returns) {
+  const slope = (fraction) => {
+    let sum = 0;
+    for (const r of returns) sum += r / (1 + fraction * r);
+    return sum;
+  };
+  if (slope(0) <= 0) return 0;
+  if (slope(1) >= 0) return 1;
+  let low = 0,
+    high = 1;
+  for (let i = 0; i < 54; i++) {
+    const mid = (low + high) / 2;
+    if (slope(mid) > 0) low = mid;
+    else high = mid;
+  }
+  return (low + high) / 2;
+}
+
+function sizeBatches(model, returns) {
+  const { bankroll, batch } = model;
+  if (returns.some((r) => !Number.isFinite(r))) {
+    return {
+      unavailable:
+        "Kelly sizing requires a positive batch cost in every trial.",
+    };
+  }
+  let quote =
+    model.lines.reduce((total, line) => total + line.cost, 0) * batch +
+    model.postage;
+  const y = model.yield;
+  if (y?.returnStack) {
+    // Reserve enough postage even when every cast produces the maximum.
+    quote +=
+      (Math.ceil((batch * y.max) / y.returnStack) -
+        Math.ceil((batch * y.base) / y.returnStack)) *
+      y.post;
+  }
+  if (!Number.isSafeInteger(quote) || quote <= 0) {
+    return {
+      unavailable:
+        "Kelly sizing needs a positive quoted batch cost within the supported copper range.",
+    };
+  }
+  const affordable = Math.floor(bankroll / quote);
+  let available = Infinity;
+  for (const line of model.lines) {
+    if (line.source !== "vendor" && line.listed_units != null)
+      available = Math.min(
+        available,
+        Math.floor(line.listed_units / (batch * line.quantity)),
+      );
+  }
+  const fraction = kellyFraction(returns);
+  const target = fraction * bankroll;
+  const limit = Math.min(affordable, available);
+  let batches = Math.min(limit, Math.floor(target / quote));
+  // Concavity leaves only the two adjacent feasible orders to compare.
+  if (batches < limit && target > batches * quote) {
+    const current = (batches * quote) / bankroll;
+    const step = quote / bankroll;
+    let gain = 0;
+    for (const r of returns) {
+      if ((batches + 1) * quote === bankroll && r === -1) {
+        gain = -Infinity;
+        break;
+      }
+      gain += Math.log1p((step * r) / (1 + current * r));
+    }
+    if (gain > 0) batches++;
+  }
+  const spend = batches * quote;
+  return {
+    fraction,
+    target: Math.round(target),
+    batches,
+    quote,
+    spend,
+    remaining: bankroll - spend,
+    stockLimited: available < affordable && available * quote < target,
+  };
+}
+
 function simulatePrices(model, trials, volatility, random = Math.random) {
   if (
     !Number.isInteger(trials) ||
@@ -105,6 +189,15 @@ function simulatePrices(model, trials, volatility, random = Math.random) {
   const produce = model.yield ? productionSampler(model, random) : null;
   const units = produce ? new Float64Array(trials) : null;
   const profits = model.proceeds != null ? new Float64Array(trials) : null;
+  if (
+    model.bankroll != null &&
+    (!Number.isSafeInteger(model.bankroll) || model.bankroll < 0)
+  )
+    throw Error("Enter starting gold as a nonnegative amount in whole copper.");
+  const returns =
+    model.bankroll != null && profits && !model.unitOnly
+      ? new Float64Array(trials)
+      : null;
   const variable = model.yield && model.yield.min !== model.yield.max;
   let meanUnits = 0,
     meanProfit = 0,
@@ -147,6 +240,7 @@ function simulatePrices(model, trials, volatility, random = Math.random) {
         throw Error("Batch proceeds exceed the supported copper range.");
       const profit = proceeds - cost;
       profits[t] = profit;
+      if (returns) returns[t] = cost > 0 ? profit / cost : NaN;
       meanProfit += (profit - meanProfit) / (t + 1);
       if (profit > 0) profitable++;
       if (production?.seconds > 0) {
@@ -200,6 +294,7 @@ function simulatePrices(model, trials, volatility, random = Math.random) {
       : null,
     goldPerHour: timed === trials ? meanRate : null,
     profitChance: profits ? profitable / trials : null,
+    kelly: returns ? sizeBatches(model, returns) : null,
   };
 }
 

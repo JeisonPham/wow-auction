@@ -139,3 +139,78 @@ assert.ok(Math.abs(deResult.goldPerHour - (0.001 * 3600) / (10 + 12)) < 1e-10);
 console.log(
   "Independent batch output rolls, profit range, postage and disenchant timing passed.",
 );
+
+// Three wins and two total losses at even odds have full Kelly 20%.
+const binary = [1, -1, 1, -1, 1];
+assert.ok(Math.abs(context.kellyFraction(binary) - 0.2) < 1e-12);
+assert.equal(context.kellyFraction([0, 0]), 0);
+assert.equal(context.kellyFraction([-0.8, 0.3]), 0);
+assert.equal(context.kellyFraction([2, 0.5, -0.1]), 1);
+const order = {
+  batch: 1,
+  bankroll: 100,
+  postage: 0,
+  lines: [{ source: "checked", cost: 30, quantity: 1 }],
+};
+const sized = context.sizeBatches(order, binary);
+assert.equal(sized.target, 20);
+assert.equal(sized.batches, 1); // 30% has better log growth than sitting out.
+assert.equal(sized.spend, 30);
+assert.equal(sized.remaining, 70);
+assert.equal(
+  context.sizeBatches({ ...order, bankroll: 30 }, binary).batches,
+  0,
+); // Ruin on a loss.
+assert.equal(context.sizeBatches({ ...order, bankroll: 0 }, [1, 1]).batches, 0);
+assert.equal(
+  context.sizeBatches({ ...order, bankroll: 29 }, [1, 1]).batches,
+  0,
+);
+assert.equal(context.sizeBatches(order, [-0.1, -0.8]).spend, 0);
+const constrained = {
+  ...order,
+  batch: 2,
+  bankroll: 1000,
+  postage: 10,
+  lines: [
+    { source: "checked", cost: 30, quantity: 2, listed_units: 9 },
+    { source: "vendor", cost: 5, quantity: 1, listed_units: 0 },
+  ],
+  yield: { min: 1, max: 5, base: 2, post: 10, returnStack: 4 },
+};
+const capped = context.sizeBatches(constrained, [1, 1]);
+assert.equal(capped.quote, 100); // 70c inputs, 10c postage, 20c maximum extra return postage.
+assert.equal(capped.batches, 2);
+assert.equal(capped.stockLimited, true);
+assert.equal(capped.spend, 200);
+
+// Alternate costs of 200c and 100c against a 145c payout. Each return must use its own trial's cost.
+let phase = 0;
+const kellyCraft = {
+  ...order,
+  bankroll: 10000,
+  proceeds: 145,
+  lines: [{ source: "estimate", unit_cost: 100, cost: 100, quantity: 1 }],
+};
+const paired = context.simulatePrices(kellyCraft, 100, 50, () =>
+  phase++ % 2 ? 0 : 1 - Math.exp(-2),
+);
+const win = 45 / 100,
+  loss = 55 / 200;
+assert.ok(
+  Math.abs(paired.kelly.fraction - (win - loss) / (2 * win * loss)) < 1e-12,
+);
+assert.equal(paired.kelly.batches, 71);
+assert.equal(simulate(unit, 0).kelly, null);
+assert.equal(simulate({ ...kellyCraft, proceeds: null }, 0).kelly, null);
+assert.match(
+  simulate({ ...kellyCraft, lines: [] }, 0).kelly.unavailable,
+  /positive batch cost/,
+);
+assert.throws(
+  () => simulate({ ...kellyCraft, bankroll: 1.5 }, 0),
+  /whole copper/,
+);
+console.log(
+  "Kelly return pairing, log-optimal sizing, full losses, affordability, postage and stock caps passed.",
+);
