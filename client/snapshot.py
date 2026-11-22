@@ -119,6 +119,7 @@ def export(files, region, market):
         recipes=[],
         recipe_requirements={},
     )
+    maximum_yields = {}
     checks, recipes, conflicts, tables = {}, {}, set(), {}
     for path, _, _ in sorted(files, key=lambda f: (f[1], f[0])):
         text = path.read_text(encoding="utf-8-sig")
@@ -170,6 +171,10 @@ def export(files, region, market):
             for profession, group in c.get("recipes", {}).items():
                 for r in group.values():
                     rid = str(r["id"])
+                    if r.get("quantity_max") is not None:
+                        maximum = r["quantity_max"]
+                        if maximum_yields.setdefault(rid, maximum) != maximum:
+                            conflicts.add(rid)
                     recipe = {k: r[k] for k in ("name", "output", "quantity")}
                     recipe.update(
                         id=rid, mats=sorted(array(m) for m in array(r["mats"]))
@@ -183,6 +188,8 @@ def export(files, region, market):
                         recipes.setdefault(rid, (recipe, req, set()))[2].add(char)
     for rid, (recipe, req, chars) in sorted(recipes.items()):
         if rid not in conflicts:
+            if rid in maximum_yields:
+                recipe["quantity_max"] = maximum_yields[rid]
             snap["recipes"].append(dict(recipe, characters=sorted(chars)))
             snap["recipe_requirements"][rid] = req
     if len(tables) == 2:

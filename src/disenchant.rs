@@ -36,6 +36,13 @@ pub fn proceeds_for(
     quantity: u32,
     quote: impl Fn(u32) -> Option<(u64, u64)>,
 ) -> Option<u64> {
+    let total = net_per_piece(d, quote)? * num_bigint::BigInt::from(quantity);
+    num_traits::ToPrimitive::to_u64(&total.to_integer())
+}
+pub fn net_per_piece(
+    d: &Band,
+    quote: impl Fn(u32) -> Option<(u64, u64)>,
+) -> Option<num_rational::BigRational> {
     let mut gross = num_rational::BigRational::from_integer(0.into());
     for (id, expected) in &d.mats {
         let (price, units) = quote(*id)?;
@@ -47,10 +54,9 @@ pub fn proceeds_for(
         let amount = format!("{whole}{fraction}")
             .parse::<num_bigint::BigInt>()
             .ok()?;
-        gross += num_rational::BigRational::new(amount * price * quantity, scale * units);
+        gross += num_rational::BigRational::new(amount * price, scale * units);
     }
-    let net = gross * num_rational::BigRational::new(323.into(), 400.into());
-    num_traits::ToPrimitive::to_u64(&net.to_integer())
+    Some(gross * num_rational::BigRational::new(323.into(), 400.into()))
 }
 fn equip(i: &Item) -> bool {
     if matches!(i.inventory_slot, Some(4 | 19))

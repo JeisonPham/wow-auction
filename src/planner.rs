@@ -323,7 +323,7 @@ fn plan(
         let current = lines(false);
         let preliminary = lines(true);
         let (ready, advice) = crate::professions::access(s, recipe, req, None, transferable);
-        let base = json!({"kind":"craft","name":recipe.name,"recipe_id":recipe.id,"quantity":recipe.quantity,"characters":recipe.characters,
+        let base = json!({"kind":"craft","name":recipe.name,"recipe_id":recipe.id,"quantity":recipe.quantity,"quantity_min":recipe.quantity_min.unwrap_or(recipe.quantity),"quantity_max":recipe.quantity_max.unwrap_or(recipe.quantity),"net_unit_value":item.and_then(|i|i.vendor_sell),"characters":recipe.characters,
             "profession":req["profession"],"requirements":req,"ready":ready,"advice":advice});
         let out = item
             .and_then(|i| i.vendor_sell)
@@ -354,6 +354,10 @@ fn plan(
             if let Some(net) = sell(false) {
                 let mut meta = base.clone();
                 meta["kind"] = "craft_auction".into();
+                meta["net_unit_value"] = quotes[&recipe.output]
+                    .price(false)
+                    .map(|(p, u)| p as f64 / u as f64 * 323.0 / 400.0)
+                    .into();
                 routes.entry(recipe.output).or_default().push(finish(
                     meta,
                     current.clone(),
@@ -381,6 +385,10 @@ fn plan(
                 crate::professions::access(s, recipe, req, Some(skill), transferable);
             let mut meta = base;
             meta["kind"] = "craft_disenchant".into();
+            meta["net_unit_value"] =
+                crate::disenchant::net_per_piece(&band, |id| quotes[&id].price(false))
+                    .and_then(|n| num_traits::ToPrimitive::to_f64(&n))
+                    .into();
             meta["ready"] = ready.into();
             meta["advice"] = advice.into();
             meta["enchanting_rank"] = skill.into();

@@ -175,6 +175,10 @@ fn unlearned_catalog_recipe_is_priced_without_upload() {
     f.items.insert(2840, ("Copper Bar".into(), 1));
     let r = planner::market_report("Forever-US", "Normal-Alliance", None, &f, 100, 101);
     let belt = recipe_route(&r, 2851, "2661", "craft");
+    let dynamite = recipe_route(&r, 4378, "3946", "craft");
+    assert_eq!(dynamite["quantity"], 3);
+    assert_eq!(dynamite["quantity_min"], 1);
+    assert_eq!(dynamite["quantity_max"], 5);
     assert_eq!(belt["ready"], false);
     assert_eq!(belt["cost"], 6);
     assert_eq!(belt["timing"]["assumed_cast"], false);
@@ -196,6 +200,7 @@ fn craft_exit_costs_and_profession_assignments() {
     let mut v = fixture();
     let s = &mut v["snapshot"];
     s["recipes"][0]["quantity"] = 2.into();
+    s["recipes"][0]["quantity_max"] = 5.into();
     s["recipe_requirements"] = json!({"buckle":{"profession":"Blacksmithing","skill":60}});
     s["items"]["2000"] = json!({"name":"Buckle","class":4,"level":10,"quality":2,"inventory_type":"INVTYPE_WAIST","vendor_sell":100,"binding":"Binds when equipped"});
     s["professions"] = json!({"Ada":{"Blacksmithing":80,"Mining":60},"Bea":{"Enchanting":50}});
@@ -208,6 +213,17 @@ fn craft_exit_costs_and_profession_assignments() {
     let de = recipe_route(&r, 2000, "buckle", "craft_disenchant");
     assert_eq!(de["cost"], 17);
     assert_eq!(de["proceeds"], 163);
+    assert_eq!(de["quantity_max"], 5);
+    assert_eq!(de["timing"]["end_de_seconds"], 3.0);
+    assert_eq!(de["net_unit_value"], 101.5_f64 * 323.0 / 400.0);
+    assert_eq!(
+        recipe_route(&r, 2000, "buckle", "craft")["net_unit_value"],
+        100
+    );
+    assert_eq!(
+        recipe_route(&r, 2000, "buckle", "craft_auction")["net_unit_value"],
+        242.25
+    );
     // One craft makes two pieces. Each takes its own disenchant cast.
     assert_eq!(de["timing"]["active_seconds"], 9.0);
     assert_eq!(de["outputs"][0]["quantity"], 203.0);
@@ -396,4 +412,41 @@ fn repeat_rate_respects_cooldowns_and_handles_zero_time_and_unknown_prices() {
     let t = &item(&run, 2000)["routes"][0]["timing"];
     assert_eq!(t["elapsed_seconds"], 5.0);
     assert!(t["gold_per_hour"].is_null());
+}
+
+#[test]
+fn uploaded_recipe_bounds_override_the_catalog_and_older_exports_keep_it() {
+    use wow_auction_monitor::catalog::FOREVER;
+    let mut player = scan::Snapshot::default();
+    let dynamite = FOREVER
+        .snapshot
+        .recipes
+        .iter()
+        .find(|r| r.id == "3946")
+        .unwrap()
+        .clone();
+    let mut old = dynamite;
+    old.quantity_min = None;
+    old.quantity_max = None;
+    player.recipes.push(old);
+    let check = |player: &scan::Snapshot| {
+        let s = FOREVER.for_player(player);
+        let r = s.recipes.iter().find(|r| r.id == "3946").unwrap();
+        (
+            r.quantity,
+            r.quantity_min.unwrap_or(r.quantity),
+            r.quantity_max.unwrap_or(r.quantity),
+        )
+    };
+    assert_eq!(check(&player), (3, 1, 5));
+    player.recipes[0].quantity_max = Some(3);
+    assert_eq!(check(&player), (3, 3, 3));
+    let classic_id = "Engineering/Heavy Dynamite";
+    player.recipes[0].id = classic_id.into();
+    player.recipes[0].quantity = 1;
+    player.recipes[0].quantity_max = Some(4);
+    player
+        .recipe_requirements
+        .insert(classic_id.into(), json!({"profession":"Engineering"}));
+    assert_eq!(check(&player), (1, 1, 4));
 }

@@ -58,18 +58,18 @@ pub(super) fn estimate(route: &Value) -> Option<Value> {
     }
     // Keep the same action offsets on each successive run. A cooldown may
     // overlap another craft, including work at the start of the next run.
-    let period = schedule
+    let cooldown_span = schedule
         .cooldowns
         .values()
-        .fold(schedule.elapsed, |period, (first, next)| {
-            period.max(next - first)
-        });
+        .fold(0.0_f64, |period, (first, next)| period.max(next - first));
+    let period = schedule.elapsed.max(cooldown_span);
     let gold_per_hour = route["profit"]
         .as_f64()
         .filter(|_| period > 0.0)
         .map(|copper| copper / 10_000.0 * 3600.0 / period);
     Some(
         json!({"active_seconds": schedule.active, "elapsed_seconds": schedule.elapsed,
-        "repeat_seconds": period, "assumed_cast": schedule.assumed, "gold_per_hour": gold_per_hour}),
+        "repeat_seconds": period, "cooldown_span":cooldown_span,
+        "end_de_seconds":if kind == "craft_disenchant" { FOREVER.disenchant_seconds } else {0.0}, "assumed_cast": schedule.assumed, "gold_per_hour": gold_per_hour}),
     )
 }

@@ -72,7 +72,9 @@ impl Catalog {
                 // The classic profession API may supply a name in place of a spell ID.
                 let mut matches = result.recipes.iter().enumerate().filter(|(_, old)| {
                     old.output == r.output
-                        && old.quantity == r.quantity
+                        && (old.quantity == r.quantity
+                            || r.quantity_max
+                                .is_some_and(|max| (r.quantity..=max).contains(&old.quantity)))
                         && old.name == r.name
                         && old.mats == r.mats
                         && req.and_then(|v| v.get("profession")).is_some_and(|prof| {
@@ -87,8 +89,17 @@ impl Catalog {
                 matches.next().is_none().then_some(first)
             });
             let id = if let Some(n) = matched {
-                let id = result.recipes[n].id.clone();
-                result.recipes[n] = r.clone();
+                let old = &result.recipes[n];
+                let id = old.id.clone();
+                let mut live = r.clone();
+                if live.quantity_max.is_none()
+                    && old.quantity == live.quantity
+                    && old.output == live.output
+                {
+                    live.quantity_min = live.quantity_min.or(old.quantity_min);
+                    live.quantity_max = old.quantity_max;
+                }
+                result.recipes[n] = live;
                 result.recipes[n].id = id.clone();
                 id
             } else {

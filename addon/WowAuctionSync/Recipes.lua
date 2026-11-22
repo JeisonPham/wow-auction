@@ -1,12 +1,13 @@
 local _,W=...
 local function itemID(link) return link and tonumber(link:match("item:(%d+)")) end
-local function record(dst,id,name,output,quantity,mats,req)
+local function record(dst,id,name,output,quantity,mats,req,maximum)
     if not output or not quantity or quantity<1 or not next(mats) then return end
     W.cache(output)
     local lines={}
     for item,count in pairs(mats) do W.cache(item); lines[#lines+1]={item,count} end
     table.sort(lines,function(a,b)return a[1]<b[1] end)
-    dst[tostring(id)]={id=tostring(id),name=name,output=output,quantity=quantity,mats=lines,requirements=req}
+    if type(maximum)~="number" or maximum<quantity then maximum=nil end
+    dst[tostring(id)]={id=tostring(id),name=name,output=output,quantity=quantity,quantity_max=maximum,mats=lines,requirements=req}
 end
 local function modern()
     local api=C_TradeSkillUI
@@ -33,7 +34,7 @@ local function modern()
                 end
             end
             if valid then record(recipes,id,info.name,s.outputItemID or itemID(api.GetRecipeItemLink(id)),s.quantityMin,mats,
-                {profession=p.professionName,skill=info.requiredSkillRank,source=info.sourceText,station=s.craftingStation,tools=s.tools}) end
+                {profession=p.professionName,skill=info.requiredSkillRank,source=info.sourceText,station=s.craftingStation,tools=s.tools},s.quantityMax) end
         end
     end
     return p.professionName,p.skillLevel or 0,recipes
@@ -56,7 +57,8 @@ local function classic()
             local link=GetTradeSkillRecipeLink and GetTradeSkillRecipeLink(n)
             local id=link and link:match("enchant:(%d+)") or (prof.."/"..name)
             local tools=GetTradeSkillTools and GetTradeSkillTools(n)
-            record(recipes,id,name,output,GetTradeSkillNumMade(n),mats,{profession=prof,tools=tools})
+            local minimum,maximum=GetTradeSkillNumMade(n)
+            record(recipes,id,name,output,minimum,mats,{profession=prof,tools=tools},maximum)
         end
     end
     return prof,rank,recipes

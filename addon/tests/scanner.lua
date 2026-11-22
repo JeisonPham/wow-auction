@@ -60,7 +60,7 @@ C_TradeSkillUI={
  GetBaseProfessionInfo=function()return {professionName="Blacksmithing",skillLevel=80}end,
  GetAllRecipeIDs=function()return {7,8}end,
  GetRecipeInfo=function()return {learned=true,name="Buckle"}end,
- GetRecipeSchematic=function(id)return {outputItemID=2000,quantityMin=1,reagentSlotSchematics={
+ GetRecipeSchematic=function(id)return {outputItemID=2000,quantityMin=1,quantityMax=5,reagentSlotSchematics={
  {required=true,quantityRequired=1,reagents={{itemID=1001}}},
  {required=true,quantityRequired=2,reagents=id==7 and {{itemID=1001}} or {{itemID=1},{itemID=2}}},
  {required=false,quantityRequired=1,reagents={{itemID=1003}}}}}end
@@ -68,6 +68,7 @@ C_TradeSkillUI={
 cmd("recipes")
 local char=WowAuctionSyncDB.profiles["Forever-US/"..market].characters.Ada
 assert(char.professions.Blacksmithing==80 and char.recipes.Blacksmithing["7"].mats[1][2]==3)
+assert(char.recipes.Blacksmithing["7"].quantity_max==5)
 assert(not char.recipes.Blacksmithing["8"])
 print("Scanner, pagination, expiry, cancellation and learned recipe checks passed.")
 

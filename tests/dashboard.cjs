@@ -13,6 +13,8 @@ const route = {
   name: "Buckle",
   ready: true,
   quantity: 1,
+  quantity_min: 1,
+  quantity_max: 1,
   profit: 83,
   timing: {
     active_seconds: 5,
@@ -167,6 +169,7 @@ async function runSimulation() {
   assert.equal(d.querySelectorAll("#body>tr").length, 40);
   d.querySelector(".rowname").click();
   d.querySelector("[data-sim-item]").click();
+  assert.equal(d.querySelector("#sim-yield-min").disabled, true);
   assert.match(d.querySelector("#sim-inputs").textContent, /5.5cIn-game scan/);
   d.querySelector("#sim-volatility").value = 0;
   assert.match(await runSimulation(), /Median unit price5.5c/);
@@ -293,6 +296,23 @@ async function runSimulation() {
   d.querySelector("[data-sim-craft]").click();
   d.querySelector("#sim-volatility").value = 0;
   assert.match(await runSimulation(), /Mean batch cost1s 15c/);
+  const minYield = d.querySelector("#sim-yield-min"),
+    maxYield = d.querySelector("#sim-yield-max");
+  assert.equal(minYield.value, "1");
+  assert.equal(maxYield.value, "1");
+  minYield.value = "6";
+  maxYield.value = "5";
+  d.querySelector("#sim-form button").click();
+  assert.match(d.querySelector("#sim-status").textContent, /Minimum pieces/);
+  minYield.value = "1";
+  minYield.dispatchEvent(new w.Event("input", { bubbles: true }));
+  const variableProfit = await runSimulation();
+  assert.match(variableProfit, /Mean batch output/);
+  assert.match(variableProfit, /Middle 90% of batch profit/);
+  assert.match(variableProfit, /Batch profit distribution/);
+  d.querySelector("#sim-close").click();
+  d.querySelector("[data-sim-craft]").click();
+  assert.equal(maxYield.value, "5");
   d.querySelector("#sim-close").click();
   w.location.hash = "#opportunities";
   await wait();

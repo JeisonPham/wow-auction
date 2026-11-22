@@ -97,6 +97,11 @@ def build(folder):
                 mats=sorted(mats.items()),
             )
         )
+        # The pinned table stores the midpoint for Heavy Dynamite; see SOURCES.md.
+        if spell == 3946 and product == 4378 and qty == int(high) == 3:
+            recipes[-1].update(quantity_min=1, quantity_max=5)
+        elif int(high) > qty:
+            recipes[-1]["quantity_max"] = int(high)
         req = {"profession": profession, "category": p.get("kind", "primary")}
         if r.get("l"):
             req["skill"] = r["l"]

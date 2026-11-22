@@ -549,7 +549,6 @@ function marketSimulationButton(item, idx) {
     : '<p class="hint">A current auction quote is needed to simulate this price.</p>';
 }
 function craftSimulationButton(route) {
-  if (route.inputs.every((line) => line.source === "vendor")) return "";
   if (
     route.inputs.some(
       (line) =>
@@ -559,7 +558,7 @@ function craftSimulationButton(route) {
     )
   )
     return '<p class="hint">Simulating a batch requires a price for each reagent.</p>';
-  return '<button class="sim-launch" aria-haspopup="dialog" data-sim-craft>Simulate reagent costs</button>';
+  return '<button class="sim-launch" aria-haspopup="dialog" data-sim-craft>Simulate craft batch</button>';
 }
 
 let simulationModel, simulationWorker;
@@ -569,11 +568,26 @@ function clearSimulation() {
   $("sim-result").replaceChildren();
   $("sim-status").textContent = "";
 }
+function craftYield(item, route, c) {
+  return {
+    key: "recipe/" + (route.recipe_id || item.id),
+    min: route.quantity_min ?? route.quantity,
+    max: route.quantity_max ?? route.quantity,
+    base: route.quantity,
+    netPerUnit:
+      route.net_unit_value ??
+      (route.proceeds == null ? null : route.proceeds / route.quantity),
+    timing: route.timing,
+    returnStack:
+      c.mail && c.back && !destroys(route) ? item.max_stack || c.stack : null,
+    post: c.post,
+  };
+}
 function openSimulation(name, model, shortages, at) {
   clearSimulation();
   simulationModel = model;
   $("sim-title").textContent =
-    name + (model.unitOnly ? " · Unit price" : " · Batch cost");
+    name + (model.unitOnly ? " · Unit price" : " · Craft batch");
   $("sim-context").textContent = model.unitOnly
     ? "Monte Carlo simulation using the quote from " + timestamp(at) + "."
     : "Monte Carlo simulation for " +
@@ -581,12 +595,25 @@ function openSimulation(name, model, shortages, at) {
       (model.batch === 1 ? " craft" : " crafts") +
       " using the report from " +
       timestamp(at) +
-      ". Output proceeds, vendor prices and " +
-      money(model.postage) +
-      " postage are fixed." +
+      ". Recipe output range: " +
+      model.yield.min +
+      "–" +
+      model.yield.max +
+      " pieces per final craft. Each cast rolls independently with equal odds for each whole number. Unit sale values and vendor prices stay fixed." +
+      (model.chained
+        ? " Intermediate steps follow the displayed production plan."
+        : "") +
       (model.expectedInputs
-        ? " Disenchant yields are held at their expected values."
+        ? " Disenchant materials use their expected yields per piece."
         : "");
+  for (const bound of ["min", "max"]) {
+    const field = $("sim-yield-" + bound);
+    field.disabled = !model.yield;
+    $("sim-" + bound + "-label").hidden = !model.yield;
+    field.value = model.yield
+      ? (saved.yieldRanges?.[model.yield.key]?.[bound] ?? model.yield[bound])
+      : "";
+  }
   $("sim-inputs").innerHTML = model.lines
     .map(
       (line) =>
@@ -622,14 +649,34 @@ function showSimulationResults(result, trials) {
   const stats = [
     ["Mean " + metric, money(average)],
     ["Median " + metric, money(median)],
-    ["Middle 90% of trials", money(p5) + " – " + money(p95)],
+    ["Middle 90% of " + metric, money(p5) + " – " + money(p95)],
   ];
+  if (result.output) {
+    stats.push(
+      [
+        "Mean batch output",
+        result.output.mean.toLocaleString(undefined, {
+          maximumFractionDigits: 2,
+        }) + " pieces",
+      ],
+      [
+        "Middle 90% of output",
+        result.output.p5 + " – " + result.output.p95 + " pieces",
+      ],
+    );
+  }
   if (profitChance != null) {
     stats.push(
-      ["Mean batch profit", money(simulationModel.proceeds - average)],
+      ["Mean batch profit", money(result.profit.mean)],
+      [
+        "Middle 90% of batch profit",
+        money(result.profit.p5) + " – " + money(result.profit.p95),
+      ],
       ["Trials with positive profit", (100 * profitChance).toFixed(1) + "%"],
     );
   }
+  if (result.goldPerHour != null)
+    stats.push(["Mean batch gold/hour", hourly(result.goldPerHour)]);
   const peak = Math.max(...bins);
   $("sim-result").innerHTML =
     "<dl>" +
@@ -642,7 +689,10 @@ function showSimulationResults(result, trials) {
     "</dl>" +
     (low === high
       ? ""
-      : '<div class="sim-bars" aria-hidden="true">' +
+      : "<p>" +
+        result.chartMetric +
+        " distribution</p>" +
+        '<div class="sim-bars" aria-hidden="true">' +
         bins
           .map((count, idx) => {
             const width = (high - low) / bins.length;
@@ -678,6 +728,21 @@ $("sim-form").onsubmit = (event) => {
   clearSimulation();
   const volatility = $("sim-volatility").valueAsNumber;
   const trials = $("sim-trials").valueAsNumber;
+  const model = { ...simulationModel };
+  if (model.yield) {
+    const min = $("sim-yield-min").valueAsNumber,
+      max = $("sim-yield-max").valueAsNumber;
+    if (min > max) {
+      $("sim-status").textContent =
+        "Minimum pieces per craft must be at most the maximum.";
+      return;
+    }
+    const ranges = (saved.yieldRanges ??= {});
+    if (min === model.yield.min && max === model.yield.max)
+      delete ranges[model.yield.key];
+    else ranges[model.yield.key] = { min, max };
+    model.yield = { ...model.yield, min, max };
+  }
   saved.simulation = { volatility, trials };
   save();
   $("sim-status").textContent = "Running simulation…";
@@ -696,7 +761,7 @@ $("sim-form").onsubmit = (event) => {
       $("sim-status").textContent =
         "Simulation interrupted. Run it again to retry.";
     };
-    worker.postMessage({ model: simulationModel, trials, volatility });
+    worker.postMessage({ model, trials, volatility });
   } catch {
     clearSimulation();
     $("sim-status").textContent =
@@ -1056,7 +1121,9 @@ $("body").onclick = async (e) => {
         batch: c.batch,
         postage: batch.postage,
         proceeds: batch.out,
-        expectedInputs: !!route.expected_inputs,
+        expectedInputs: !!route.expected_inputs || destroys(route),
+        chained: !!route.stages?.length,
+        yield: craftYield(i, route, c),
         lines: route.inputs,
       },
       batch.shortages,

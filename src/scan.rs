@@ -38,6 +38,10 @@ pub struct Recipe {
     pub name: String,
     pub output: u32,
     pub quantity: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quantity_min: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quantity_max: Option<u32>,
     pub mats: Vec<(u32, u32)>,
     #[serde(default)]
     pub characters: Vec<String>,
@@ -253,6 +257,9 @@ pub fn decode(data: &[u8], region: &str, market: &str, now: u64) -> Result<Bundl
             !r.id.is_empty()
                 && ids.insert(&r.id)
                 && r.quantity > 0
+                && r.quantity_min
+                    .is_none_or(|min| (1..=r.quantity).contains(&min))
+                && r.quantity_max.is_none_or(|max| max >= r.quantity)
                 && r.output > 0
                 && !r.mats.is_empty()
                 && r.mats

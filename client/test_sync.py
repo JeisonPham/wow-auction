@@ -17,7 +17,7 @@ class ScannerTests(unittest.TestCase):
             path = game / "WTF/Account/Test/SavedVariables/WowAuctionSync.lua"
             path.parent.mkdir(parents=True)
             path.write_text(
-                """WowAuctionSyncDB = {version=1, markets={}, targeted={["Normal-Alliance"]={region="Forever-US", complete=true,capturedAt=100,checked={[1001]=true,[1002]=true},items={[1001]={quantity=4,totalBuyout=22,auctions=2}}}}, profiles={["Forever-US/Normal-Alliance"]={characters={Ada={level=25,professions={Blacksmithing=100},recipes={Blacksmithing={b={id="b",name="Buckle",output=2000,quantity=1,mats={{1001,3}}}}}}},itemInfo={[2000]={name="Buckle",vendor_sell=100}}}}}"""
+                """WowAuctionSyncDB = {version=1, markets={}, targeted={["Normal-Alliance"]={region="Forever-US", complete=true,capturedAt=100,checked={[1001]=true,[1002]=true},items={[1001]={quantity=4,totalBuyout=22,auctions=2}}}}, profiles={["Forever-US/Normal-Alliance"]={characters={Ada={level=25,professions={Blacksmithing=100},recipes={Blacksmithing={b={id="b",name="Buckle",output=2000,quantity=1,quantity_max=5,mats={{1001,3}}}}}}},itemInfo={[2000]={name="Buckle",vendor_sell=100}}}}}"""
             )
             helper = game / "Interface/AddOns/TradeSkillMaster_AppHelper/AppData.lua"
             helper.parent.mkdir()
@@ -34,6 +34,7 @@ class ScannerTests(unittest.TestCase):
                 b["snapshot"]["estimate_prices"]["1001"]["total_buyout"], 31
             )
             self.assertEqual(b["snapshot"]["recipes"][0]["mats"], [[1001, 3]])
+            self.assertEqual(b["snapshot"]["recipes"][0]["quantity_max"], 5)
             self.assertEqual(b["targeted"][0]["listed_units"], {"1001": 4, "1002": 0})
             now = int(time.time())
             q = dict(

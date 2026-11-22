@@ -54,3 +54,88 @@ assert.throws(() => context.simulatePrices(craft, 100, -1));
 console.log(
   "Normal price draws, nonnegative sampling, percentiles and batch costs passed.",
 );
+
+const dynamite = {
+  batch: 10,
+  proceeds: 3000,
+  postage: 0,
+  lines: [{ source: "vendor", cost: 300 }],
+  yield: {
+    min: 1,
+    max: 5,
+    base: 3,
+    netPerUnit: 100,
+    timing: { elapsed_seconds: 5, repeat_seconds: 5 },
+  },
+};
+const varying = simulate(dynamite, 0);
+assert.ok(Math.abs(varying.output.mean - 30) < 0.15);
+assert.ok(varying.output.p5 >= 21 && varying.output.p5 <= 24);
+assert.ok(varying.output.p95 >= 36 && varying.output.p95 <= 39);
+assert.equal(varying.p5, 3000);
+assert.ok(varying.profit.p5 < 0 && varying.profit.p95 > 0);
+assert.ok(varying.profitChance > 0.44 && varying.profitChance < 0.48);
+assert.equal(varying.chartMetric, "Batch profit");
+let rolls = 0;
+const alternating = context.simulatePrices(dynamite, 100, 0, () =>
+  rolls++ % 2 ? 0.999 : 0,
+);
+assert.equal(rolls, 1000);
+assert.equal(alternating.output.p5, 30);
+assert.equal(alternating.output.p95, 30);
+assert.equal(alternating.profitChance, 0);
+const noQuote = simulate({ ...dynamite, proceeds: null }, 0);
+assert.equal(noQuote.profit, null);
+assert.ok(noQuote.output.mean > 29);
+assert.throws(() =>
+  simulate({ ...dynamite, yield: { ...dynamite.yield, min: 6 } }, 0),
+);
+const noRoll = () => {
+  throw Error("Fixed yield must not draw randomly");
+};
+const fixedFour = context.simulatePrices(
+  {
+    ...dynamite,
+    postage: 60,
+    yield: {
+      ...dynamite.yield,
+      min: 4,
+      max: 4,
+      returnStack: 10,
+      post: 20,
+    },
+  },
+  100,
+  0,
+  noRoll,
+);
+assert.equal(fixedFour.average, 3080);
+assert.equal(fixedFour.profit.mean, 920);
+assert.ok(Math.abs(fixedFour.goldPerHour - 6.624) < 1e-10);
+const deBatch = {
+  ...dynamite,
+  batch: 2,
+  proceeds: 10,
+  lines: [],
+  yield: {
+    min: 1,
+    max: 3,
+    base: 2,
+    netPerUnit: 2.75,
+    timing: {
+      elapsed_seconds: 9,
+      repeat_seconds: 10,
+      cooldown_span: 10,
+      end_de_seconds: 3,
+    },
+  },
+};
+rolls = 0;
+const deResult = context.simulatePrices(deBatch, 100, 0, () =>
+  rolls++ % 2 ? 0.999 : 0,
+);
+assert.equal(deResult.profit.mean, 10); // One piece pays 2c, three pieces pay 8c.
+assert.ok(Math.abs(deResult.goldPerHour - (0.001 * 3600) / (10 + 12)) < 1e-10);
+console.log(
+  "Independent batch output rolls, profit range, postage and disenchant timing passed.",
+);
