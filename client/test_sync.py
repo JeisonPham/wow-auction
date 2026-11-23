@@ -23,11 +23,12 @@ class ScannerTests(unittest.TestCase):
             path.write_text('WowAuctionSyncDB={version=1,targeted={["Normal-Alliance"]={'
                             'region="Forever-US",capturedAt=100,complete=true,'
                             'checked={[1]=true,[2]=true},checkedAt={[1]=90,[2]=105},'
-                            'items={[2]={totalBuyout=11,auctions=1,quantity=2,lots={[2]={[11]=1}}}}}}}')
+                            'items={[2]={totalBuyout=11,auctions=1,quantity=2,lots={nil,{[11]=1}}}}}}}')
             caps = export(fingerprint(game), "Forever-US", "Normal-Alliance")["targeted"]
             self.assertEqual([(c["captured_at"], c["listed_units"]) for c in caps],
                              [(105, {"2": 2}), (90, {"1": 0})])
             self.assertEqual(caps[0]["prices"]["2"]["observed_at"], 105)
+            self.assertEqual(caps[0]["prices"]["2"]["lots"], [[2, 11, 1]])
         checks = {str(n): (n, None) for n in range(1, 1001)}
         caps = pack_checks(checks, 501)
         self.assertLessEqual(len(caps), 128)
@@ -35,6 +36,27 @@ class ScannerTests(unittest.TestCase):
         exported = {int(k): c["captured_at"] for c in caps for k in c["listed_units"]}
         self.assertEqual(len(exported), 1000)
         self.assertTrue(all(t <= k and (t >= 501) == (k >= 501) for k,t in exported.items()))
+
+    def test_full_scan_with_sparse_lots(self):
+        with tempfile.TemporaryDirectory() as folder:
+            game = Path(folder)
+            path = game / "WTF/Account/A/SavedVariables/WowAuctionSync.lua"
+            path.parent.mkdir(parents=True)
+            path.write_text("""
+                WowAuctionSyncDB = {version=1, markets={["Normal-Alliance"]={
+                    region="Forever-US", capturedAt=100, complete=true, items={
+                        [1001]={quantity=8,totalBuyout=11,auctions=3,
+                            lots={nil, {nil, nil, 2}, nil, {[5]=1}}},
+                        [1002]={quantity=1,totalBuyout=7,auctions=1,lots=nil},
+                    }
+                }}}
+            """)
+            bundle = export(fingerprint(game), "Forever-US", "Normal-Alliance")
+            prices = bundle["snapshot"]["prices"]
+            self.assertEqual(prices["1001"], dict(total_buyout=11, units=8, auctions=3,
+                                                  observed_at=100, lots=[[2, 3, 2], [4, 5, 1]]))
+            self.assertEqual(prices["1002"], dict(total_buyout=7, units=1, auctions=1,
+                                                  observed_at=100))
 
     def test_first_save_and_empty_accounts(self):
         with tempfile.TemporaryDirectory() as folder:

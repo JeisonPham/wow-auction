@@ -53,7 +53,9 @@ class Reader:
                     value = self.value(depth + 1)
                 if key in table:
                     raise ValueError("Duplicate Lua table key")
-                table[key] = value
+                # Lua leaves nil fields absent, but a positional nil still uses its index.
+                if value is not None:
+                    table[key] = value
                 if self.token in (",", ";"):
                     self.next()
                 elif self.token != "}":
