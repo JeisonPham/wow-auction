@@ -249,6 +249,7 @@ fn handle(mut r: Request, c: &Config, state: &Mutex<State>) {
         )),
         "/app.css" => Some(("text/css", include_str!("../web/app.css"))),
         "/app.js" => Some(("text/javascript", include_str!("../web/app.js"))),
+        "/shopping.js" => Some(("text/javascript", include_str!("../web/shopping.js"))),
         "/price-simulation.js" => Some((
             "text/javascript",
             include_str!("../web/price-simulation.js"),

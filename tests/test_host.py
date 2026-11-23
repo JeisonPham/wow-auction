@@ -98,7 +98,7 @@ class HostTests(unittest.TestCase):
             targeted=[
                 dict(
                     captured_at=at,
-                    prices={"1001": price},
+                    prices={"1001": dict(price, lots=[[2, 11, 2]])},
                     listed_units={"1001": 4, "1002": 0},
                 )
             ],
@@ -129,6 +129,9 @@ class HostTests(unittest.TestCase):
         code, data, headers = self.req("/api/report")
         self.assertEqual(code, 200)
         r = json.loads(data)
+        self.assertEqual(next(i["lots"] for i in r["items"] if i["id"] == 1001), [[2, 11, 2]])
+        self.assertIn(b"/shopping.js", self.req("/")[1])
+        self.assertIn(b"quoteShoppingBatch", self.req("/shopping.js")[1])
         self.assertIn(1001, r["scan_queue"])
         self.assertEqual(
             next(

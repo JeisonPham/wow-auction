@@ -5,11 +5,37 @@ from pathlib import Path
 
 from disenchant import import_tables
 from lua_data import named_table
-from snapshot import compress, export, fingerprint
+from snapshot import compress, export, fingerprint, pack_checks
 from sync import addon_path, endpoint, install, write_queue
 
 
 class ScannerTests(unittest.TestCase):
+    def test_local_opportunity_checks_keep_item_times_and_complete_scope(self):
+        with tempfile.TemporaryDirectory() as folder:
+            game = Path(folder)
+            install(game)
+            toc = (addon_path(game) / "WowAuctionSync.toc").read_text()
+            for line in toc.splitlines():
+                if line.endswith(".lua"):
+                    self.assertTrue((addon_path(game) / line).is_file(), line)
+            path = game / "WTF/Account/A/SavedVariables/WowAuctionSync.lua"
+            path.parent.mkdir(parents=True)
+            path.write_text('WowAuctionSyncDB={version=1,targeted={["Normal-Alliance"]={'
+                            'region="Forever-US",capturedAt=100,complete=true,'
+                            'checked={[1]=true,[2]=true},checkedAt={[1]=90,[2]=105},'
+                            'items={[2]={totalBuyout=11,auctions=1,quantity=2,lots={[2]={[11]=1}}}}}}}')
+            caps = export(fingerprint(game), "Forever-US", "Normal-Alliance")["targeted"]
+            self.assertEqual([(c["captured_at"], c["listed_units"]) for c in caps],
+                             [(105, {"2": 2}), (90, {"1": 0})])
+            self.assertEqual(caps[0]["prices"]["2"]["observed_at"], 105)
+        checks = {str(n): (n, None) for n in range(1, 1001)}
+        caps = pack_checks(checks, 501)
+        self.assertLessEqual(len(caps), 128)
+        self.assertEqual(caps[0]["captured_at"], 1000)
+        exported = {int(k): c["captured_at"] for c in caps for k in c["listed_units"]}
+        self.assertEqual(len(exported), 1000)
+        self.assertTrue(all(t <= k and (t >= 501) == (k >= 501) for k,t in exported.items()))
+
     def test_first_save_and_empty_accounts(self):
         with tempfile.TemporaryDirectory() as folder:
             game = Path(folder)
@@ -47,7 +73,7 @@ class ScannerTests(unittest.TestCase):
             path = game / "WTF/Account/Test/SavedVariables/WowAuctionSync.lua"
             path.parent.mkdir(parents=True)
             path.write_text(
-                """WowAuctionSyncDB = {version=1, markets={}, targeted={["Normal-Alliance"]={region="Forever-US", complete=true,capturedAt=100,checked={[1001]=true,[1002]=true},items={[1001]={quantity=4,totalBuyout=22,auctions=2}}}}, profiles={["Forever-US/Normal-Alliance"]={characters={Ada={level=25,professions={Blacksmithing=100},recipes={Blacksmithing={b={id="b",name="Buckle",output=2000,quantity=1,quantity_max=5,mats={{1001,3}}}}}}},itemInfo={[2000]={name="Buckle",vendor_sell=100}}}}}"""
+                """WowAuctionSyncDB = {version=1, markets={}, targeted={["Normal-Alliance"]={region="Forever-US", complete=true,capturedAt=100,checked={[1001]=true,[1002]=true},items={[1001]={quantity=4,totalBuyout=22,auctions=2,lots={[2]={[11]=2}}}}}}, profiles={["Forever-US/Normal-Alliance"]={characters={Ada={level=25,professions={Blacksmithing=100},recipes={Blacksmithing={b={id="b",name="Buckle",output=2000,quantity=1,quantity_max=5,mats={{1001,3}}}}}}},itemInfo={[2000]={name="Buckle",vendor_sell=100}}}}}"""
             )
             helper = game / "Interface/AddOns/TradeSkillMaster_AppHelper/AppData.lua"
             helper.parent.mkdir()
@@ -66,6 +92,7 @@ class ScannerTests(unittest.TestCase):
             self.assertEqual(b["snapshot"]["recipes"][0]["mats"], [[1001, 3]])
             self.assertEqual(b["snapshot"]["recipes"][0]["quantity_max"], 5)
             self.assertEqual(b["targeted"][0]["listed_units"], {"1001": 4, "1002": 0})
+            self.assertEqual(b["targeted"][0]["prices"]["1001"]["lots"], [[2, 11, 2]])
             now = int(time.time())
             q = dict(
                 region=b["region"],

@@ -128,10 +128,16 @@ local function base(link)
     for _,n in ipairs({2,3,4,5,6,7,13}) do if (fields[n] or 0)~=0 then return false end end
     return true
 end
-local function add(items,id,qty,total)
+local function add(items,id,qty,total,unitPrice)
     if not total or total<=0 then return end
-    local r=items[id] or {quantity=0,totalBuyout=0,auctions=0}
+    local r=items[id] or {quantity=0,totalBuyout=0,auctions=0,lots={}}
     r.quantity=r.quantity+qty; r.totalBuyout=r.totalBuyout+total; r.auctions=r.auctions+1
+    -- Commodities can be bought individually. Classic stacks carry one total buyout.
+    local size,price,count=qty,total,1
+    if unitPrice then size,price,count=1,unitPrice,qty end
+    local prices=r.lots[size] or {}
+    prices[price]=(prices[price] or 0)+count
+    r.lots[size]=prices
     items[id]=r
 end
 local function stop(text, complete)
@@ -141,12 +147,28 @@ local function stop(text, complete)
     hideStatusAt = now + REPORT_INTERVAL
     say(lastStatus)
 end
+function W.auctionOpen() return opened and capital() end
+function W.scanBusy() return job ~= nil end
 local function commit()
     local db=WowAuctionSyncDB
-    local rec={region=job.region,capturedAt=time(),items=job.items,complete=true}
+    local rec={region=job.region,capturedAt=job.scanTime,items=job.items,complete=true}
     if job.mode=="full" then db.markets[job.market]=rec
-    else rec.checked=job.checked; db.targeted[job.market]=rec end
+    else
+        rec.checked, rec.checkedAt = job.checked, job.checkedAt
+        local previous = db.targeted[job.market]
+        if previous and previous.complete and previous.region == job.region then
+            for id in pairs(previous.checked) do
+                if not rec.checked[id] then
+                    rec.checked[id] = true
+                    rec.checkedAt[id] = (previous.checkedAt and previous.checkedAt[id]) or previous.capturedAt
+                    rec.items[id] = previous.items[id]
+                end
+            end
+        end
+        db.targeted[job.market] = rec
+    end
     stop("Scan complete. Type /reload to save.", true)
+    if W.quotesChanged then W.quotesChanged() end
 end
 local function advance()
     job.waitReason=nil
@@ -169,7 +191,10 @@ local function readFull()
                 W.cache(id)
                 return
             end
-            if base(link) then add(job.items,id,qty,buy);W.cache(id) end
+            if base(link) then
+                if not job.items[id] then W.cache(id) end
+                add(job.items,id,qty,buy)
+            end
         end
         job.row=job.row+1;job.deadline=GetTime()+90
     end
@@ -195,14 +220,14 @@ local function targetResults()
             if commodity then
                 if row.itemID and row.itemID~=id then return end
                 if not row.unitPrice then return end
-                add(rows,id,row.quantity,row.unitPrice*row.quantity)
+                add(rows,id,row.quantity,row.unitPrice*row.quantity,row.unitPrice)
             elseif row.buyoutAmount and row.buyoutAmount>0 then
                 if not row.itemLink then return end
                 if base(row.itemLink) then add(rows,id,row.quantity,row.buyoutAmount) end
             end
         end
     end
-    job.items[id]=rows[id];job.checked[id]=true;W.cache(id);advance()
+    job.items[id]=rows[id];job.checked[id]=true;job.checkedAt[id]=job.queryAt;W.cache(id);advance()
 end
 local function stepScan()
     if job.phase=="fullRows" then readFull()
@@ -219,7 +244,7 @@ local function stepScan()
         job.waitReason=nil
         local gear=(class==2 or class==4) and equip and equip~=""
         local key=AH.MakeItemKey(id,gear and level or 0,0,0)
-        job.key=key;job.phase="waiting";AH.SendSearchQuery(key,{},false)
+        job.key=key;job.queryAt=time();job.phase="waiting";AH.SendSearchQuery(key,{},false)
     elseif job.phase=="page" and AH.IsThrottledMessageSystemReady() then
         job.phase="waiting"
         if job.commodity then AH.RequestMoreCommoditySearchResults(job.ids[job.index])
@@ -236,7 +261,11 @@ frame:SetScript("OnUpdate",function()
     end
     local now = GetTime()
     if job.expires and time()>job.expires then stop("Queue expired. Scan discarded.");return end
-    if now>job.deadline then stop("Scan timed out. Previous observations retained.");return end
+    if now>job.deadline then
+        stop(job.phase=="replicate" and "Scan timed out waiting for a full snapshot. Recheck a route or page in Opportunities."
+            or "Scan timed out. Previous observations retained.")
+        return
+    end
     stepScan()
     if job and (now >= job.nextRefresh or now >= job.nextReport) then
         local text = showStatus(now)
@@ -250,8 +279,9 @@ end)
 frame:SetScript("OnEvent",function(_,event,arg)
     if event=="ADDON_LOADED" and arg==addonName then database()
     elseif event=="GET_ITEM_INFO_RECEIVED" and pendingInfo[arg] then W.cache(arg)
-    elseif event=="AUCTION_HOUSE_SHOW" then opened=true
+    elseif event=="AUCTION_HOUSE_SHOW" then opened=true;if W.attachOpportunities then W.attachOpportunities() end
     elseif event=="AUCTION_HOUSE_CLOSED" then opened=false;if job then stop("Window closed. Scan discarded.") end
+        if W.stopFollowing then W.stopFollowing() end
     elseif job and job.mode=="full" and event=="REPLICATE_ITEM_LIST_UPDATE" and job.phase=="replicate" then
         job.row=0;job.rows=AH.GetNumReplicateItems();job.phase="fullRows"
     elseif job and job.mode=="scan" and job.phase=="waiting" then
@@ -260,33 +290,53 @@ frame:SetScript("OnEvent",function(_,event,arg)
     end
 end)
 for _,event in ipairs({"ADDON_LOADED","GET_ITEM_INFO_RECEIVED","AUCTION_HOUSE_SHOW","AUCTION_HOUSE_CLOSED","REPLICATE_ITEM_LIST_UPDATE","COMMODITY_SEARCH_RESULTS_UPDATED","ITEM_SEARCH_RESULTS_UPDATED"}) do frame:RegisterEvent(event) end
+function W.startScan(mode, ids)
+    local profile,region,market,problem=W.profile()
+    if problem then say(problem);return false end
+    if mode=="scan" and ids and #ids>0 and job and job.phase=="replicate" then
+        stop("Switching from the pending full snapshot to the requested item checks.")
+    end
+    if job or not profile or not W.auctionOpen() then
+        say("Open your faction capital auction house and finish any running scan.");return false
+    end
+    local expires
+    if mode=="scan" and not ids then
+        local queue=WowAuctionSyncQueue
+        if not queue or queue.region~=region or queue.market~=market or queue.expiresAt<time() or #queue.items==0 then
+            say("No current queue for this market.");return false
+        end
+        ids,expires=queue.items,queue.expiresAt
+    end
+    if mode=="scan" and #ids==0 then say("This route has no auction items to recheck.");return false end
+    local now=GetTime()
+    job={region=region,market=market,mode=mode,items={},checked={},checkedAt={},deadline=now+90,
+        started=now,scanTime=time(),nextRefresh=now+1,nextReport=now+REPORT_INTERVAL}
+    hideStatusAt=nil
+    if mode=="full" then job.phase="replicate"
+    else job.ids=ids;job.expires=expires;job.index=0;advance() end
+    say(showStatus(now))
+    if mode=="full" then AH.ReplicateItems() end
+    return true
+end
 SLASH_WOWAUCTIONSYNC1="/wamsync"
 if not (C_AddOns and C_AddOns.IsAddOnLoaded("WowAuctionMonitor")) then SLASH_WOWAUCTIONSYNC2="/wam" end
 SlashCmdList.WOWAUCTIONSYNC=function(cmd)
     cmd=cmd:lower():match("^%s*(.-)%s*$")
     local profile,region,market,problem=W.profile()
     if problem and cmd~="cancel" then say(problem);return end
+    if cmd=="opportunities" then W.openOpportunities();return end
     if cmd=="status" then
         local state=job and showStatus(GetTime()) or (lastStatus and "Idle · Last scan · "..lastStatus or "Idle")
         say((region or "?").." / "..(market or "?").." · "..state);return
     end
     if cmd=="cancel" then
+        if W.stopFollowing then W.stopFollowing() end
         if job then stop("Cancelled. Scan discarded.") else say("No scan is running.") end
         return
     end
     if cmd=="roster" then if profile then W.roster(profile,true) end;return end
     if cmd=="recipes" then if profile then W.recipes(profile) end;return end
-    if cmd~="scan" and cmd~="full" then say("/wamsync full | scan | recipes | roster | status | cancel");return end
-    if job or not profile or not opened or not capital() then say("Open your faction capital auction house and finish any running scan.");return end
-    local queue=WowAuctionSyncQueue
-    if cmd=="scan" and (not queue or queue.region~=region or queue.market~=market or queue.expiresAt<time() or #queue.items==0) then say("No current queue for this market.");return end
-    local now=GetTime()
-    job={region=region,market=market,mode=cmd,items={},checked={},deadline=now+90,
-        started=now,nextRefresh=now+1,nextReport=now+REPORT_INTERVAL}
-    hideStatusAt=nil
-    if cmd=="full" then job.phase="replicate"
-    else job.ids=queue.items;job.expires=queue.expiresAt;job.index=0;advance() end
-    say(showStatus(now))
-    if cmd=="full" then AH.ReplicateItems() end
+    if cmd~="scan" and cmd~="full" then say("/wamsync opportunities | full | scan | recipes | roster | status | cancel");return end
+    W.startScan(cmd)
 end
 

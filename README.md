@@ -2,23 +2,60 @@
 
 A local auction scanner and market dashboard for WoW Forever. The scanner evaluates 2,051 catalog recipes across 14 professions and class skill lines, including recipes your characters have never learned. The default market is **Forever-US / Normal-Alliance**.
 
-If your server is already running, go to [install or update the gaming PC add-on](#connect-your-characters-and-check-stock). If the uploader says **No saved database**, see [saved database and upload troubleshooting](#saved-database-and-upload-troubleshooting).
-
 ## Upload from your gaming PC to a hosted REST API
 
-Run TSM Desktop on the gaming PC and enable AppHelper for your Forever installation and market. From the extracted project folder, run the following in PowerShell. Replace the example URL with the **full HTTPS upload endpoint** supplied by your host, including its path.
+**WoW Auction Sync** scans the auction house and shows opportunities in-game. To send a scan to your online database, type `/reload` after the scan finishes. WoW writes the results to disk, and the Python uploader on your gaming PC sends them to your server over HTTPS. The client connects to the scanner’s REST API. The bundled server handles storage and displays the latest accepted snapshot on your dashboard.
 
-```powershell
-py -3 start.py client --upload-url "https://auction.example.com/api/scans"
+### Connect to your server
+
+1. Get the **server URL**, **upload token**, **region**, and **market** from your host. The upload token is the password the API uses to accept uploads. If you host the bundled scanner yourself, use the value of `WOW_UPLOAD_TOKEN` from the server’s `.env` beside `start.py`. For a new server, follow [Host on a domain](#host-on-a-domain).
+2. On the gaming PC, extract the **full scanner source package** and open the folder containing `start.py`. The launcher runs with Python 3. Start TSM Desktop, enable AppHelper for your WoW Forever installation, and let it sync your market. The uploader waits for AppHelper prices before sending scans. [TSM Desktop setup](https://support.tradeskillmaster.com/tsm-desktop-application/how-do-i-set-up-the-tsm-desktop-application)
+3. Create a plain-text file named **`client.env`** beside `start.py` on the gaming PC. For the bundled scanner, use the following example. Replace `auction.example.com` with your domain and use the same region and market as your server.
+
+```dotenv
+WOW_SERVER_URL=https://auction.example.com
+WOW_REGION=Forever-US
+WOW_MARKET=Normal-Alliance
 ```
 
-On macOS or Linux use `python3` in place of `py -3`. Enter the API’s bearer token at the prompt. For a custom game location, add `--wow-dir "D:\Games\World of Warcraft\_forever_"`. The client waits for a populated AppHelper price book, uploads the first snapshot, and checks for changes every 15 seconds while running. Add `--once` for a single upload.
+Use **one** URL setting in `client.env`, according to what your host gave you.
 
-**Endpoint contract.** The client sends an HTTPS POST to the exact URL with `Authorization: Bearer <token>` and `Content-Type: application/gzip`. The body is gzip-compressed scanner JSON with `version`, `revision`, `region`, `market`, `snapshot`, and `targeted`. On success the API can return an empty 2xx response, such as `204 No Content`, or a JSON object with the matching numeric `revision` and an optional `status`. Return an HTTP error if the upload fails. The bundled scanner implements this contract at `POST /api/scans`. The [rebuild guide](wow-auction-monitor-rebuild-guide.md) describes the snapshot fields.
+| What your host gave you | URL setting | What the uploader does |
+| --- | --- | --- |
+| The base URL of the bundled scanner | `WOW_SERVER_URL=https://auction.example.com` | Uploads to `/api/scans` and downloads the server’s targeted scan queue. |
+| An exact upload endpoint, including its path | `WOW_UPLOAD_URL=https://auction.example.com/api/scans` | Posts to that exact address. Use the full path your host supplied. |
 
-For repeated launches, put `WOW_UPLOAD_URL=https://auction.example.com/api/scans` in a private `client.env` next to `start.py` and run `py -3 start.py client`. For unattended use, also set `WOW_UPLOAD_TOKEN` or `WOW_UPLOAD_TOKEN_FILE`. You can set `WOW_GAME_DIR`, `WOW_REGION` and `WOW_MARKET` in the same file. The market must match the API's configuration. The uploader sends the selected price book and supported scanner exports. TSM sign-in stays on the PC. [TSM setup guide](https://support.tradeskillmaster.com/tsm-desktop-application/how-do-i-set-up-the-tsm-desktop-application)
+### Install or update the gaming PC add-on
 
-**In-game scan queue.** If the hosted domain runs the bundled scanner and you use its targeted scans, pass the scanner’s **base URL** with `--server https://auction.example.com` or set `WOW_SERVER_URL` in the client configuration. This mode posts to `/api/scans` and polls `/api/scan-queue` when the add-on is installed. The full-endpoint mode makes only upload requests.
+From the folder containing `start.py`, run the command for your gaming PC. When prompted for **API bearer token**, paste just the token value. For unattended use, you can set `WOW_UPLOAD_TOKEN` in your private `client.env` or set `WOW_UPLOAD_TOKEN_FILE` to the path of a file containing the token.
+
+| Platform | Install the add-on and keep uploading | Install the add-on for offline play |
+| --- | --- | --- |
+| Windows PowerShell | `py -3 start.py client` | `py -3 start.py install` |
+| macOS or Linux | `python3 start.py client` | `python3 start.py install` |
+
+Client mode installs or updates **WoW Auction Sync** before starting the uploader. The terminal prints the add-on folder. It preserves your scan queue and saved scans. Leave the terminal running while you play. For future updates, extract the new package and restart the uploader with the same command. Use `Ctrl+C` to stop it.
+
+For a custom WoW installation, set `WOW_GAME_DIR` in `client.env` or pass `--wow-dir` with the game folder or its parent. You can also supply the URL directly on the command line. This Windows example uses a custom game location.
+
+```powershell
+py -3 start.py client --wow-dir "D:\Games\World of Warcraft" --server "https://auction.example.com"
+```
+
+For a host that gave you an exact endpoint, use `--upload-url "https://auction.example.com/api/scans"`. Add `--once` to send the current saved snapshot and exit.
+
+### Save your first scan
+
+1. Start WoW, enable **WoW Auction Sync** in the AddOns list, and visit your faction capital’s auction house. If you installed an update while logged in, type `/reload` to load it. Open the auction house and type `/wamsync opportunities`. The panel requests a full scan if it needs one. **Scan all** requests a new snapshot. Keep the auction house open while the scan runs.
+2. When chat says **Scan complete. Type /reload to save.**, type `/reload`. Results appear in-game before this step. Reloading writes the scan to `WowAuctionSync.lua` so the uploader can read it.
+3. Check the uploader terminal. It polls for file changes every 15 seconds by default. With the bundled server, **accepted revision** means the server saved the upload. **unchanged revision** means the same snapshot was already there. An upload-only host may return **uploaded revision**.
+4. Open your bundled dashboard at `https://auction.example.com/`. Check **Last upload** for the receipt time, then open **Market prices**, find an item you scanned, and check its **Last check**, **Checked units**, and **Checked average**. For a second confirmation, open `https://auction.example.com/api/status` and match `upload_revision` to the number in your terminal. For a custom upload-only API, use its receipt and the verification view your host provides.
+
+**During play**, use **Recheck route** before buying or **Follow** to recheck the selected route about once a minute while the panel and auction house stay open. Type `/reload` after a completed recheck when you want the web dashboard to receive it. [In-game opportunity controls](#find-opportunities-at-the-auction-house)
+
+### Custom endpoint contract
+
+The client sends an HTTPS POST to the exact URL with `Authorization: Bearer <token>` and `Content-Type: application/gzip`. The body is gzip-compressed JSON with `version`, `revision`, `region`, `market`, `snapshot`, and `targeted`. On success the API can return an empty 2xx response, such as `204 No Content`, or a JSON object with the matching numeric `revision` and an optional `status`. Return an HTTP error if the upload fails. The bundled scanner implements this contract at `POST /api/scans`. [Snapshot fields](wow-auction-monitor-rebuild-guide.md)
 
 ## Hosting the bundled scanner
 
@@ -37,7 +74,11 @@ Open **http://127.0.0.1:8765/**. For a local upload test, use **http://127.0.0.1
 
 ### Host on a domain
 
-To host the included API and dashboard yourself, run `python3 start.py server` on the server with Docker running. Route your domain’s HTTPS traffic to the scanner on host loopback port 8765. The first launch creates a private `.env` containing `WOW_UPLOAD_TOKEN`. Keep the existing Compose project name to reuse the `dashboard-data` volume. The server retains the last accepted upload across restarts. On the dashboard, **Last upload** shows receipt time and **Estimate age** shows price freshness.
+On the server, extract the project and run the two Docker Compose setup commands above. Initialization creates a private `.env` next to `start.py`. If you use a different region or market, set `WOW_REGION` and `WOW_MARKET` in that file before starting Compose. You can also start the server with `python3 start.py server`.
+
+Point your domain’s DNS at the server. On that host, configure your HTTPS reverse proxy to forward the domain’s paths, including `/api/`, to `http://127.0.0.1:8765` and pass through the `Authorization` header. From the gaming PC, open `https://auction.example.com/healthz` using your own domain. The bundled service responds with `ok`. Give the gaming PC that domain’s base URL and the server’s upload token.
+
+The bundled scanner stores the accepted snapshot at `/data/scan-upload.json.gz` inside the `dashboard-data` Docker volume and restores it after a restart. Keep the same Compose project name when updating to reuse the volume. **Last upload** shows the server receipt time. **Estimate age** tracks the TSM estimate timestamp.
 
 Set `WOW_PORT` in the server's `.env` to change the host port. The server also fetches public TSM estimates. Set `WOW_TSM_PUBLIC=0` to use only uploaded estimates. A native server uses `python3 start.py server --native` with Rust and curl installed and stores data in `local-data/`.
 
@@ -47,9 +88,35 @@ For an all-in-one installation, run `python3 start.py server --desktop` on the m
 
 ## Browse crafts and plan professions
 
+### Find opportunities at the auction house
+
+On the gaming PC, install the updated **WoW Auction Sync** add-on using the [installation steps](#install-or-update-the-gaming-pc-add-on). At your faction capital auction house, click **Opportunities** or type `/wamsync opportunities`. It requests a full scan when you open it without a recent full snapshot. The results appear in-game as soon as the scan and calculations finish. The add-on can price routes during the same session without TSM Desktop, the uploader, or a UI reload.
+
+- **Scan all** reads the auction house and evaluates eligible recipes across the bundled catalog, including unlearned crafts. It checks craft → vendor, craft → auction, craft → disenchant, buy → vendor and buy → disenchant. The list includes losses and unpriced crafts. Select **All margins** to toggle profitable-only results. Search by name, profession, route or `chained`.
+- **Recheck route** searches the current listings for that route’s raw inputs and auction sale outputs. **Recheck page** checks the distinct items behind the eight visible rows. Use these between full scans. WoW throttles full scans and individual searches. Progress is reported every ten seconds while scanning. [Auction house replication](https://warcraft.wiki.gg/wiki/API_C_AuctionHouse.ReplicateItems)
+- **Follow** requests a recheck of the selected route about once a minute while the panel and auction house are open. The add-on finishes each scan before starting another. Closing either window or using `/wamsync cancel` stops following. New checks replace older prices for just those items, including an explicit empty result when the auctions sold out. A quote expires after 15 minutes. The selected priced route shows the age of its oldest auction quote.
+- Set **Runs** for the batch size and **Min. profit (c)** for the copper to reserve across the batch. Select a route to see purchase quantities, production steps, projected profit, repeat gold/hour where applicable, and capped searches you can copy into TSM Shopping. Press Enter to apply a number. Confirm each purchase in-game and keep within the displayed stack quantity.
+
+The in-game planner compares whole-stack costs with known vendor prices. It compares a direct recipe with locally priced intermediate crafts and disenchant steps up to three levels deep. For each reagent it considers the lowest unit-cost producer from the previous level and prices the combined shopping list against available stock. Other combinations can be cheaper. Auction exits use the lowest scanned ask, a 5% auction cut and a 15% sale reserve. Craft output and disenchant materials use planning quantities and expected yields. In-game margins cover purchases for the selected batch and assume no mailing charges.
+
+To publish the new prices to the web dashboard, type `/reload` after scanning and keep the updated PC uploader running. The uploader preserves individual search times and consolidates older timestamps conservatively if needed to fit the API’s 128-capture limit.
+
+### Use the web dashboard
+
 Open **Opportunities** or **Professions** to see all crafts the planner evaluates for your market, including unlearned recipes and crafts with insufficient reagent stock. **Profit per run** defaults to **All margins**. Choose **Profitable** for gains above zero, **Break-even** for zero profit, **Loss** for negative profit, or **Unknown** when the planner lacks a cost or sale value. Check the **Stock** column separately for reagent availability.
 
 Pick **Craft → vendor**, **Craft → disenchant**, or **Craft → auction** in the route filter. The table shows the cost and profit per recipe run. Expand a row for reagents, quantities, qualifications, price sources, cooldowns when known and batch calculations. Eligible direct buy-to-vendor and buy-to-disenchant routes are also supported.
+
+### Buy reagents at a profitable price in TSM
+
+1. Update the server, PC uploader and **WoW Auction Sync** add-on. Follow the [add-on installation steps](#install-or-update-the-gaming-pc-add-on), restart the uploader and type `/reload` to load the updated add-on. At the capital auction house run `/wamsync full`. After **Scan complete**, type `/reload` again to upload the listings. A targeted `/wamsync scan` also works when the queue covers the necessary items.
+2. Open **Opportunities** or **Professions**, leave **Price basis** on **Current listings** and set **Batch size (runs)**. The profit filter, rankings and costs use that batch. The scanner counts the cash needed for whole stacks, compares vendor inputs when available, and includes the selected postage. For auction sales it uses the lowest scanned unit ask after the auction cut and sale reserve. Disenchanting uses expected drops and variable-yield recipes use their planning quantity.
+3. Expand the route. Under **TSM shopping ceilings**, set **Minimum batch profit (copper)**. The default reserves one copper for the entire batch. For example, a 1g vendor payout with 20s of fixed costs and a 10s profit target leaves 70s for reagents. If the only purchase is 10 ore, the ceiling is 7s per ore. With multiple reagents, the dashboard splits the same budget in proportion to the scanned cost of each purchase and rounds each ceiling down.
+4. Use **Copy search** beside each reagent and paste it in TSM's Shopping search at the auction house. It matches the item name, applies the maximum unit price and includes the shopping quantity. Check the stack size before confirming each purchase. Buying extra units can exceed the batch budget. Refresh the scan and copy new searches if prices, quantities, or the target change. [TSM Shopping search filters](https://support.tradeskillmaster.com/addon/how-do-i-filter-items-in-my-groups-or-the-base-group)
+
+**Current listings** requires auction quotes from the last 15 minutes, or sooner if the server expires quotes earlier. Missing listing detail, expired quotes or too little stock give an **Unknown** batch margin. When the scanned batch falls short of the target, the dashboard can still give a lower buy ceiling to shop for. A copied search keeps its numeric ceiling until you replace it. For large batches with many different stack sizes, the scanner estimates a purchasable combination by unit price and compares finishing stacks. Projected auction proceeds depend on finding a buyer at the modeled sale price.
+
+Choose **Planning estimates** to browse older uploads, checked averages and TSM estimates. Buying ceilings are available under **Current listings**.
 
 **Max. character level** includes routes at or below your limit. It checks profession ranks, recipe and pattern learning levels, and disenchanting across every step. If a bind-on-pickup pattern comes only from quests in the catalog, the crafter must also meet the minimum level to accept a qualifying quest. Expand a route to see the pattern and its recorded level requirements. A plain buy-to-vendor route is available at level 1. Routes with an unknown level are hidden while a limit is set. Clear the field to see them again.
 
@@ -65,33 +132,10 @@ The planner looks up to four intermediate sourcing levels deep. At each level it
 
 ## Connect your characters and check stock
 
-### Install or update the gaming PC add-on
+After the [first upload](#save-your-first-scan), add character data if you want profession recommendations.
 
-Extract the current scanner package on the gaming PC. Run the commands below from that folder, using the path to your active `_forever_` installation. The installer copies **WoW Auction Sync** into `Interface/AddOns` and preserves the existing scan queue. If an older uploader is running, stop it with `Ctrl+C` and restart it from the updated folder.
-
-On macOS, these commands use the default game path. Replace the example URL with your scanner's domain.
-
-```sh
-python3 client/sync.py install --wow-dir "/Applications/World of Warcraft/_forever_"
-python3 start.py client --wow-dir "/Applications/World of Warcraft/_forever_" --server https://auction.example.com
-```
-
-On Windows, use PowerShell and replace the game path and server URL with yours.
-
-```powershell
-$game = 'C:\Program Files (x86)\World of Warcraft\_forever_'
-py -3 client/sync.py install --wow-dir "$game"
-py -3 start.py client --wow-dir "$game" --server https://auction.example.com
-```
-
-These commands use the bundled server's base URL so the PC can download targeted scan queues. If your host supplied a full upload endpoint instead, use the [upload-only client command](#upload-from-your-gaming-pc-to-a-hosted-rest-api).
-
-### Save your first scan
-
-1. Enable **WoW Auction Sync** in WoW. If you updated it while logged in, type `/reload` to load the new code.
-2. On each main or alt, run `/wamsync roster`, including characters with free profession slots. If prompted, expand the Skills pane sections and repeat. Open each character's own profession windows and run `/wamsync recipes` in each one. Type `/reload` to write those records to disk.
-3. At your faction capital's auction house, run `/wamsync full` and keep the auction house open. When chat says **Scan complete. Type /reload to save.**, type `/reload`. The running PC uploader checks for changes every 15 seconds by default. Check its terminal for the upload receipt and the dashboard's **Last upload** time for confirmation.
-4. For a targeted scan, wait for the uploader to report **Updated queue** with a positive item count. Type `/reload` to load the queue, open the auction house, run `/wamsync scan`, and type `/reload` after completion to export the results.
+- On each main or alt, run `/wamsync roster`, including characters with free profession slots. If prompted, expand the Skills pane sections and repeat. Open each character’s own profession windows and run `/wamsync recipes` in each one. Type `/reload` to write those records for upload.
+- To scan the bundled server’s suggested items, use the base URL connection and wait for the uploader to report **Updated queue** with a positive item count. Type `/reload` to load the queue, open the auction house, run `/wamsync scan`, and type `/reload` after completion to export the results. You can also run `/wamsync full` directly at the capital auction house for a full snapshot.
 
 The in-game status bar shows elapsed time. The add-on posts progress to chat **every 10 seconds** while a scan is active. A full scan first waits for listings, then counts rows read. A targeted scan counts items checked and shows the current item ID. Use `/wamsync status` for an immediate update or the last outcome in the current session. Closing the auction house, running `/wamsync cancel`, or reaching a timeout discards the unfinished scan and keeps the previous completed observations.
 
@@ -105,6 +149,9 @@ _forever_/WTF/Account/<account>/SavedVariables/WowAuctionSync.lua
 
 | What you see | What to check |
 | --- | --- |
+| **HTTP 401: invalid bearer token** | Use the value of the host’s upload token at the prompt, without the `WOW_UPLOAD_TOKEN=` prefix or the word `Bearer`. If the uploader uses a token file or an environment variable, check that value and restart the client. |
+| **HTTP 404** or an unexpected HTML response | Check the URL setting. Use the domain root with `WOW_SERVER_URL`, or the exact upload path with `WOW_UPLOAD_URL`. On a self-hosted server, verify that the reverse proxy forwards `/api/scans`. |
+| **HTTP 422** with a scope mismatch | Compare `WOW_REGION` and `WOW_MARKET` in the PC’s `client.env` with the region and market shown on the server dashboard. |
 | **No saved database in WowAuctionSync.lua** | Update the add-on and restart the uploader from the same extracted package. In WoW, run `/reload`, `/wamsync roster`, then `/reload` again. Check the file above for your active account. The updated uploader can skip an empty account file when another account or TSM has data for the selected market. |
 | **Waiting for in-game data** | Run `/wamsync status` and compare its region and market with the uploader's settings. Confirm that `--wow-dir` points to the installation you play. After a roster capture or completed scan, use `/reload` and check the file path printed by the uploader. |
 | **Waiting for TSM Desktop AppHelper prices** | Open TSM Desktop and check that AppHelper is enabled and has synced the selected Forever market. The `start.py client` watcher needs a populated price book for that market before uploading. |
@@ -118,7 +165,7 @@ In **Market prices**, expand a reagent and select **Simulate unit price**. In **
 
 Choose a standard deviation and a trial count, then click **Run simulation**. The defaults are 10% of each unit quote and 5,000 trials. The spread is your assumption about price variability. Each trial draws independently from a normal distribution centered on each auction quote and redraws negative prices. At high volatility this raises the simulated mean above the quote. The report shows the mean, median, 5th–95th percentile range, and distribution of simulated outcomes.
 
-For a craft, set **Min. pieces per craft** and **Max. pieces per craft**. The simulator samples a whole number independently for every final craft in every trial, with equal odds across the range. Equal bounds give a fixed output. The add-on exports the recipe’s in-game limits when available. Reinstall the add-on on the gaming PC, open the profession, run `/wamsync recipes`, then `/reload` to send them. Heavy Dynamite starts with its **1–5 pieces per craft** range. Three is its bundled planning quantity. The simulator assumes equal odds because its inputs provide bounds without probabilities. You can override the simulation bounds per recipe in the current tab.
+For a craft, set **Min. pieces per craft** and **Max. pieces per craft**. The simulator samples a whole number independently for every final craft in every trial, with equal odds across the range. Equal bounds give a fixed output. The add-on exports the recipe’s in-game limits when available. Start the updated client on the gaming PC, reload WoW, open the profession, run `/wamsync recipes`, then `/reload` to send them. Heavy Dynamite starts with its **1–5 pieces per craft** range. Three is its bundled planning quantity. The simulator assumes equal odds because its inputs provide bounds without probabilities. You can override the simulation bounds per recipe in the current tab.
 
 One sampled price per reagent applies to the whole batch. For each trial the simulator values the actual number of pieces at the route's unit sale value, including auction deductions where applicable. It also adjusts return-mail stacks and the time for disenchanting the final pieces. The results show the batch output range, profit range, chance of positive profit and mean batch gold/hour when the necessary prices and timing are available. Supply limits and disenchant material averages follow the displayed plan. The route table retains its planning quantity.
 
@@ -138,7 +185,9 @@ cargo build --locked
 python3 -m unittest discover -s tests -v
 python3 -m unittest discover -s client -v
 node tests/price-simulation.cjs
+node tests/shopping.cjs
 lua addon/tests/scanner.lua
+lua addon/tests/opportunities.lua
 cargo build --release --locked
 ```
 

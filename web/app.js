@@ -78,6 +78,7 @@ const save = () => {
   } catch {}
 };
 let report,
+  listingBook = new Map(),
   busy = false,
   offline = "",
   rows = [],
@@ -124,6 +125,7 @@ function setup() {
   $("level").value = p.level;
   $("route").value = p.route || "";
   $("profitability").value = p.profitability || "";
+  $("pricing").value = p.pricing || "listings";
   $("trainingCost").value = p.trainingCost || "";
   $("trainingCostLabel").hidden = v !== "professions";
   $("batchSize").value = saved.batchSize;
@@ -131,6 +133,7 @@ function setup() {
   $("access").value = p.access || "";
   $("routeLabel").hidden =
     $("profitabilityLabel").hidden =
+    $("pricingLabel").hidden =
     $("accessLabel").hidden =
     $("levelLabel").hidden =
     $("profLabel").hidden =
@@ -373,7 +376,8 @@ function render() {
       if (match) rows.push({ i, key: String(i.id) });
       continue;
     }
-    for (const [index, r] of i.routes.entries()) {
+    for (const [index, base] of i.routes.entries()) {
+      const r = pricedRoute(i, base);
       if (
         v === "opportunities" &&
         !isCraft(r) &&
@@ -489,7 +493,11 @@ function render() {
                       .join(" · "),
                   ) +
                   "</small>"),
-            money(r.cost),
+            money(
+              r.shopping?.cost == null
+                ? r.cost
+                : r.shopping.cost / calc(i, r).batch,
+            ),
             '<span class="' +
               profitability(r.profit) +
               '">' +
@@ -556,7 +564,7 @@ function render() {
             "</p>" +
             (market ? marketSimulationButton(i, idx) : "") +
             (r ? [r] : i.routes)
-              .map((route, n) => detail(i, route, idx, n))
+              .map((route, n) => detail(i, r || pricedRoute(i, route), idx, n))
               .join("") +
             "</div></td></tr>"
           : "")
@@ -896,8 +904,38 @@ function calc(i, r) {
     stack: 20,
     post: 30,
     returns: 1,
+    minProfit: 1,
     ...settings,
     batch: validBatch(settings?.batch) ? settings.batch : saved.batchSize,
+  };
+}
+function pricedRoute(i, r) {
+  if (prefs().pricing === "estimates" || view() === "market") return r;
+  const c = calc(i, r);
+  const postage = summary(i, r, c).postage;
+  const cutoff =
+    Math.floor(Date.now() / 1000) - (report?.shopping_max_age ?? 900);
+  const q = quoteShoppingBatch(i, r, c, postage, listingBook, cutoff);
+  const profit = q.profit == null ? null : q.profit / c.batch;
+  const timing = r.timing && {
+    ...r.timing,
+    gold_per_hour:
+      profit == null || !r.timing.repeat_seconds
+        ? null
+        : (profit * 0.36) / r.timing.repeat_seconds,
+  };
+  return {
+    ...r,
+    baseRoute: r,
+    shopping: q,
+    inputs: q.inputs,
+    outputs: q.outputs,
+    cost: q.cost == null ? null : (q.cost - postage) / c.batch,
+    proceeds: q.out == null ? null : q.out / c.batch,
+    net_unit_value: q.netUnit,
+    profit,
+    timing,
+    stock: q.short ? "insufficient" : q.issue ? "unknown" : "verified",
   };
 }
 function summary(i, r, c) {
@@ -915,8 +953,16 @@ function summary(i, r, c) {
           : 0
       : 0;
   const postage = c.mail ? (stacks + back) * c.post : 0;
-  const cost = r.cost == null ? null : r.cost * c.batch + postage,
-    out = r.proceeds == null ? null : r.proceeds * c.batch;
+  const cost = r.shopping
+      ? r.shopping.cost
+      : r.cost == null
+        ? null
+        : r.cost * c.batch + postage,
+    out = r.shopping
+      ? r.shopping.out
+      : r.proceeds == null
+        ? null
+        : r.proceeds * c.batch;
   const shortages = r.inputs
     .filter(
       (l) =>
@@ -1036,7 +1082,9 @@ function instructions(i, r, c) {
       : []),
     "Basis: " +
       r.stock +
-      "; checked prices are weighted averages. " +
+      (r.shopping
+        ? " · Current listing prices for this batch. "
+        : " · Checked prices are weighted averages. ") +
       (destroys(r)
         ? "Random yields; net includes the 5% auction cut and 15% sale reserve."
         : r.kind === "craft_auction"
@@ -1052,6 +1100,81 @@ function instructions(i, r, c) {
       money(b.net),
     ...b.shortages.map((s) => "Stock shortage: " + s),
   ].join("\n");
+}
+function tsmSearch(order) {
+  if (!order.cap || !order.name || /[/;^\r\n]/.test(order.name)) return null;
+  return (
+    order.name +
+    "/exact/" +
+    money(order.cap).replaceAll(" ", "") +
+    "/x" +
+    order.units
+  );
+}
+function shoppingPanel(r, c, input) {
+  const q = r.shopping;
+  let text =
+    "<h4>TSM shopping ceilings</h4>" +
+    input(
+      "minProfit",
+      "Minimum batch profit (copper)",
+      Number.MAX_SAFE_INTEGER,
+    );
+  if (q.issue)
+    return (
+      text +
+      '<p class="hint">' +
+      esc(q.issue) +
+      " Run /wamsync full at the auction house, then /reload after completion.</p>"
+    );
+  if (!q.orders.length)
+    return text + "<p>This route buys all inputs from vendors.</p>";
+  text +=
+    "<p>Oldest listing used " +
+    esc(timestamp(q.oldest)) +
+    ". Projected batch profit " +
+    money(q.profit) +
+    " at scanned prices. " +
+    (q.profit < c.minProfit
+      ? "Wait for lower reagent prices to meet your target."
+      : "The scanned batch meets your target.") +
+    "</p>";
+  if (!q.capsReady)
+    return (
+      text +
+      "<p>The remaining budget cannot fund every reagent at a positive whole-copper ceiling.</p>"
+    );
+  return (
+    text +
+    "<p>Paste each search into TSM Shopping. Stay within both its unit price and quantity, including the last stack.</p><ul>" +
+    q.orders
+      .map((o) => {
+        const search = tsmSearch(o);
+        return (
+          "<li>" +
+          esc(o.name) +
+          " × " +
+          o.units +
+          " · max " +
+          money(o.cap) +
+          " each · max spend " +
+          money(o.cap * o.units) +
+          (o.available < o.units
+            ? " · Only " + o.available + " units scanned at or below ceiling"
+            : "") +
+          (search
+            ? " <code>" +
+              esc(search) +
+              '</code> <button data-tsm="' +
+              o.id +
+              '">Copy search</button>'
+            : " · Enter this ceiling in a TSM Shopping Operation for this item.") +
+          "</li>"
+        );
+      })
+      .join("") +
+    "</ul>"
+  );
 }
 function detail(i, r, idx, n) {
   const override = prefs().calc[routeKey(i, r)]?.batch;
@@ -1142,7 +1265,9 @@ function detail(i, r, idx, n) {
       : "") +
     '<p class="hint">' +
     esc(r.stock) +
-    " · Checked prices are weighted averages." +
+    (r.shopping
+      ? " · Current listing prices for this batch."
+      : " · Checked prices are weighted averages.") +
     (destroys(r)
       ? " Expected proceeds include the auction cut and sale reserve. Drops and sale prices vary. " +
         esc(report?.catalog?.disenchant_source || "")
@@ -1183,6 +1308,7 @@ function detail(i, r, idx, n) {
         esc(b.shortages.join(" / ")) +
         "</p>"
       : "") +
+    (r.shopping ? shoppingPanel(r, c, input) : "") +
     "<button data-copy>Copy Markdown</button> " +
     (isCraft(r) ? craftSimulationButton(r) : "") +
     "</div>"
@@ -1239,6 +1365,22 @@ $("body").onclick = async (e) => {
       batch.shortages,
       report.generated_at,
     );
+  } else if (btn.hasAttribute("data-tsm")) {
+    const el = btn.closest(".route");
+    const { i, r } = rows[+el.dataset.idx];
+    const latest = pricedRoute(
+      i,
+      r?.baseRoute || i.routes[+el.dataset.route],
+    ).shopping;
+    const order = latest?.orders.find((o) => o.id === Number(btn.dataset.tsm));
+    const search = order && latest.capsReady && tsmSearch(order);
+    if (!search) return render();
+    try {
+      await navigator.clipboard.writeText(search);
+      btn.textContent = "Copied";
+    } catch {
+      btn.textContent = "Select and copy the search";
+    }
   } else if (btn.hasAttribute("data-copy")) {
     const el = btn.closest(".route"),
       { i, r } = rows[+el.dataset.idx],
@@ -1288,6 +1430,7 @@ for (const key of [
   "access",
   "route",
   "profitability",
+  "pricing",
   "trainingCost",
 ])
   $(key).oninput = (e) => {
@@ -1314,6 +1457,7 @@ async function refresh() {
     if (res.status !== 304) {
       if (!res.ok) throw Error("HTTP " + res.status);
       report = await res.json();
+      listingBook = indexListings(report.items);
       etag = res.headers.get("etag");
     }
     offline = "";

@@ -16,6 +16,9 @@ pub struct Price {
     pub units: u64,
     pub auctions: u64,
     pub observed_at: u64,
+    /// Stack size, buyout for one stack, number of identical stacks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lots: Vec<[u64; 3]>,
 }
 #[derive(Clone, Default, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -120,7 +123,29 @@ fn book(b: &Book, time: u64, desktop: bool, now: u64) -> Result<()> {
                     p.auctions > 0 && p.auctions <= p.units
                 },
             "invalid price record",
-        )?
+        )?;
+        if !p.lots.is_empty() {
+            check(!desktop, "desktop estimate has auction lots")?;
+            let (mut units, mut total) = (0u128, 0u128);
+            for &[size, price, count] in &p.lots {
+                check(
+                    (1..=p.units).contains(&size)
+                        && (1..=p.total_buyout).contains(&price)
+                        && (1..=p.units).contains(&count),
+                    "invalid auction lot",
+                )?;
+                units += u128::from(size) * u128::from(count);
+                total += u128::from(price) * u128::from(count);
+                check(
+                    units <= p.units.into() && total <= p.total_buyout.into(),
+                    "auction lot totals exceeded",
+                )?;
+            }
+            check(
+                units == p.units.into() && total == p.total_buyout.into(),
+                "incomplete auction lots",
+            )?;
+        }
     }
     Ok(())
 }

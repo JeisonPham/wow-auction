@@ -21,4 +21,5 @@ To build from source, run the following from the project root. The first argumen
 
 ```sh
 python3 tools/build_catalog.py /tmp/wam-forever-sources --download
+python3 tools/build_addon_catalog.py
 ```

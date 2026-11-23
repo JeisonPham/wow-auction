@@ -77,6 +77,7 @@ cmd("status");lastSays("Normal-Alliance");lastSays("0/3 listings")
 assert(not WowAuctionSyncDB.markets[market]);ready=true;tick()
 assert(bar.value==3 and bar.maximum==3);lastSays("Scan complete. Type /reload")
 assert(WowAuctionSyncDB.markets[market].items[1001].totalBuyout==11)
+assert(WowAuctionSyncDB.markets[market].items[1001].lots[2][11]==1)
 event("ADDON_LOADED","WowAuctionSync");assert(WowAuctionSyncDB==db and db.markets[market])
 messages=#chat;elapse(10);assert(not bar.shown and #chat==messages)
 WowAuctionSyncQueue={region="Forever-US",market=market,expiresAt=200,items={1001,1002,1003}}
@@ -92,6 +93,8 @@ local record=WowAuctionSyncDB.targeted[market]
 assert(record.checked[1002] and not record.items[1002])
 assert(record.items[1001].quantity==4 and record.items[1001].totalBuyout==20)
 assert(record.items[1003].totalBuyout==15)
+assert(record.items[1001].lots[1][5]==4 and record.items[1003].lots[2][15]==1)
+assert(record.checkedAt[1001]<record.checkedAt[1003])
 lastSays("3/3 items");assert(bar.value==3 and bar.maximum==3)
 cmd("scan");tick();event("AUCTION_HOUSE_CLOSED");assert(WowAuctionSyncDB.targeted[market]==record)
 lastSays("Window closed")
@@ -107,6 +110,13 @@ messages=#chat;elapse(22);assert(#chat==messages and not bar.shown)
 cmd("status");lastSays("Idle");lastSays("Cancelled.")
 rows=0;cmd("full");event("REPLICATE_ITEM_LIST_UPDATE");elapse(10)
 lastSays("0/0 listings");lastSays("Scan complete");assert(bar.value==bar.maximum)
+local previousAt=record.checkedAt[1003]
+C_AuctionHouse.GetNumCommoditySearchResults=function()return 0 end
+assert(W.startScan("scan",{1001}))
+tick();local observed=time();elapse(2);event("COMMODITY_SEARCH_RESULTS_UPDATED",1001);tick()
+local refreshed=db.targeted[market]
+assert(refreshed.checked[1001] and not refreshed.items[1001] and refreshed.checkedAt[1001]==observed)
+assert(refreshed.checkedAt[1003]==previousAt and refreshed.items[1003].totalBuyout==15)
 C_TradeSkillUI={
  GetBaseProfessionInfo=function()return {professionName="Blacksmithing",skillLevel=80}end,
  GetAllRecipeIDs=function()return {7,8}end,

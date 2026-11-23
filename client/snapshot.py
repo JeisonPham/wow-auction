@@ -108,15 +108,40 @@ def apphelper(text, region, market, filename=""):
 
 def prices(rec):
     at = rec["capturedAt"]
-    return {
-        str(k): dict(
-            total_buyout=v["totalBuyout"],
-            units=v["quantity"],
-            auctions=v["auctions"],
-            observed_at=at,
-        )
-        for k, v in rec.get("items", {}).items()
-    }
+    book = {}
+    for k, v in rec.get("items", {}).items():
+        entry = dict(total_buyout=v["totalBuyout"], units=v["quantity"],
+                     auctions=v["auctions"], observed_at=at)
+        if "lots" in v:
+            entry["lots"] = sorted(
+                [size, price, count]
+                for size, levels in v["lots"].items()
+                for price, count in levels.items()
+            )
+        book[str(k)] = entry
+    return book
+
+
+def pack_checks(observations, full_time):
+    """Keep per-search ages, including empty results, in the existing REST format."""
+    times = sorted({at for at, _ in observations.values()})
+    stamp = {at: at for at in times}
+    if len(times) > 128:
+        # Coalesce older observations conservatively. Keep the newest exact for
+        # revision comparisons, and never move a newer check behind a full scan.
+        size = (len(times) + 124) // 125
+        for side in ([at for at in times[:-1] if at < full_time],
+                     [at for at in times[:-1] if at >= full_time]):
+            for i, at in enumerate(side):
+                stamp[at] = side[i // size * size]
+    groups = {}
+    for item, (observed, price) in observations.items():
+        at = stamp[observed]
+        group = groups.setdefault(at, dict(captured_at=at, prices={}, listed_units={}))
+        group["listed_units"][item] = price["units"] if price else 0
+        if price:
+            group["prices"][item] = dict(price, observed_at=at)
+    return [groups[at] for at in sorted(groups, reverse=True)]
 
 
 def export(files, region, market):
@@ -130,6 +155,8 @@ def export(files, region, market):
     )
     maximum_yields = {}
     checks, recipes, conflicts, tables = {}, {}, set(), {}
+    observations = {}
+    per_item_times = False
     saved_path = None
     for path, _, _ in sorted(files, key=lambda f: (f[1], f[0])):
         text = path.read_text(encoding="utf-8-sig")
@@ -166,16 +193,25 @@ def export(files, region, market):
         rec = db.get("targeted", {}).get(market, {})
         if rec.get("region") == region and rec.get("complete") is True:
             p = prices(rec)
-            cap = dict(
-                captured_at=rec["capturedAt"],
-                prices=p,
-                listed_units={
-                    str(k): p.get(str(k), {}).get("units", 0)
-                    for k, v in rec["checked"].items()
-                    if v
-                },
-            )
-            checks[json.dumps(cap, sort_keys=True)] = cap
+            stamps = rec.get("checkedAt", {})
+            per_item_times |= bool(stamps)
+            for key, checked in rec["checked"].items():
+                if checked:
+                    at = stamps.get(key, rec["capturedAt"])
+                    item = str(key)
+                    if item not in observations or at >= observations[item][0]:
+                        observations[item] = at, p.get(item)
+            if not stamps:
+                cap = dict(
+                    captured_at=rec["capturedAt"],
+                    prices=p,
+                    listed_units={
+                        str(k): p.get(str(k), {}).get("units", 0)
+                        for k, v in rec["checked"].items()
+                        if v
+                    },
+                )
+                checks[json.dumps(cap, sort_keys=True)] = cap
         profile = db.get("profiles", {}).get(region + "/" + market, {})
         for k, meta in profile.get("itemInfo", {}).items():
             snap["items"][str(k)] = meta
@@ -217,6 +253,7 @@ def export(files, region, market):
     if saved_path and not (
         snap.get("newest_price_at")
         or checks
+        or observations
         or snap["character_levels"]
         or snap["items"]
         or snap.get("estimate_prices")
@@ -243,7 +280,8 @@ def export(files, region, market):
         market=market,
         revision=revision,
         snapshot=snap,
-        targeted=sorted(checks.values(), key=lambda c: -c["captured_at"])[:128],
+        targeted=(pack_checks(observations, snap.get("newest_price_at", 0)) if per_item_times
+                  else sorted(checks.values(), key=lambda c: -c["captured_at"])[:128]),
     )
 
 

@@ -36,6 +36,29 @@ fn item(r: &Value, id: u32) -> &Value {
         .unwrap()
 }
 #[test]
+fn checked_lot_depth_round_trips_and_matches_scan_totals() {
+    let mut v = fixture();
+    let lots = json!([[2, 11, 2]]);
+    v["targeted"][0]["prices"]["1001"]["lots"] = lots.clone();
+    let r = report(&v, &Default::default(), 101);
+    assert_eq!(item(&r, 1001)["lots"], lots);
+    assert_eq!(r["shopping_max_age"], 100);
+    for invalid in [
+        json!([[2, 11, 1]]),
+        json!([[2, 12, 2]]),
+        json!([[0, 11, 2]]),
+    ] {
+        v["targeted"][0]["prices"]["1001"]["lots"] = invalid;
+        assert!(scan::decode(
+            &zip(&serde_json::to_vec(&v).unwrap()),
+            "Forever-US",
+            "Normal-Alliance",
+            101
+        )
+        .is_err());
+    }
+}
+#[test]
 fn buckle_and_coverage() {
     let r = report(&fixture(), &Default::default(), 101);
     let route = &item(&r, 2000)["routes"][0];

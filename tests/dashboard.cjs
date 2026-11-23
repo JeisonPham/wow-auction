@@ -159,7 +159,11 @@ w.Worker = class {
     this.thread.terminate();
   }
 };
-w.eval(fs.readFileSync("web/app.js", "utf8"));
+w.eval(
+  ["web/shopping.js", "web/app.js"]
+    .map((file) => fs.readFileSync(file, "utf8"))
+    .join("\n"),
+);
 const wait = () => new Promise((r) => setTimeout(r, 5));
 async function runSimulation() {
   d.querySelector("#sim-form button").click();
@@ -207,6 +211,10 @@ async function runSimulation() {
   assert.equal(d.querySelectorAll("#body>tr").length, 3);
   w.location.hash = "#professions";
   await wait();
+  assert.equal(d.querySelector("#pricing").value, "listings");
+  const planning = d.querySelector("#pricing");
+  planning.value = "estimates";
+  planning.dispatchEvent(new w.Event("input"));
   const panel = d.querySelector("#training");
   assert.match(panel.textContent, /2,051 recipes checked/);
   assert.match(panel.textContent, /Level an alt with Engineering/);
@@ -362,6 +370,7 @@ async function runSimulation() {
   d.querySelector("#sim-close").click();
   w.location.hash = "#opportunities";
   await wait();
+  filter("pricing", "estimates");
   filter("level", "20");
   assert.equal(d.querySelectorAll(".rowname").length, 1);
   d.querySelector("#refresh").click();
@@ -435,6 +444,52 @@ async function runSimulation() {
   await wait();
   assert.equal(d.querySelector("#profitability").value, "loss");
   assert.match(d.querySelector("#body").textContent, /Margin loss/);
+  // Current prices come from whole scanned stacks and the capped TSM search
+  // must be derived from the same batch and postage used by the profit filter.
+  w.location.hash = "#opportunities";
+  await wait();
+  filter("pricing", "listings");
+  filter("search", "Buckle");
+  filter("batchSize", "1");
+  const buckle = items[0];
+  buckle.vendor_sell = 100;
+  const ore = {
+    id: 1001,
+    name: "Ore",
+    lots: [[2, 11, 2]],
+    listed_units: 4,
+    checked_at: at,
+    routes: [],
+  };
+  items.push(ore);
+  d.querySelector("#refresh").click();
+  await wait();
+  filter("profitability", "profit");
+  assert.equal(d.querySelector("#body tr td:nth-child(4)").textContent, "78c");
+  d.querySelector(".rowname").click();
+  assert.match(d.querySelector(".route").textContent, /Ore × 4 · max 24c each/);
+  d.querySelector("[data-tsm]").click();
+  await wait();
+  assert.equal(copied, "Ore/exact/24c/x4");
+  const target = d.querySelector('[data-field="minProfit"]');
+  target.value = 80;
+  target.dispatchEvent(new w.Event("change", { bubbles: true }));
+  assert.match(d.querySelector(".route").textContent, /Wait for lower/);
+  assert.match(d.querySelector(".route").textContent, /max 5c each/);
+  filter("batchSize", "2");
+  assert.equal(d.querySelectorAll(".rowname").length, 0);
+  filter("profitability", "unknown");
+  assert.match(
+    d.querySelector(".route").textContent,
+    /Insufficient listed quantity/,
+  );
+  assert.equal(d.querySelector("[data-tsm]"), null);
+  filter("batchSize", "1");
+  ore.checked_at = at - 901;
+  d.querySelector("#refresh").click();
+  await wait();
+  assert.match(d.querySelector(".route").textContent, /fresh listing scan/);
+  assert.equal(d.querySelector("[data-tsm]"), null);
   console.log(
     "Dashboard search, pagination, profit filters, routes, batch shortage, postage, clipboard and offline retention passed",
   );

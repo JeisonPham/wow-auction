@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>WoW Auction Monitor</title>
     <link rel="stylesheet" href="/app.css" />
+    <script src="/shopping.js" defer></script>
     <script src="/app.js" defer></script>
   </head>
   <body>
@@ -68,6 +69,11 @@
               <option value="craft_auction">Craft → auction</option>
               <option value="vendor">Buy → vendor</option>
               <option value="disenchant">Buy → disenchant</option>
+            </select></label
+          ><label id="pricingLabel"
+            >Price basis<select id="pricing">
+              <option value="listings">Current listings</option>
+              <option value="estimates">Planning estimates</option>
             </select></label
           ><label id="profitabilityLabel"
             >Profit per run<select id="profitability">

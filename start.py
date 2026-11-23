@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Start the auction dashboard server or the gaming PC uploader."""
+"""Start the auction dashboard, run the gaming PC uploader, or install its add-on."""
 
 import argparse
 import getpass
@@ -9,6 +9,8 @@ import secrets
 import subprocess
 import sys
 from pathlib import Path
+
+from client.addon import install
 
 
 def token_file(root):
@@ -27,10 +29,13 @@ def game_folder(explicit, env):
     if explicit:
         folder = Path(explicit).expanduser()
         for candidate in (folder / "_forever_", folder):
-            if (candidate / "Interface" / "AddOns").is_dir():
+            if (
+                candidate.name == "_forever_" and candidate.is_dir()
+                or (candidate / "Interface" / "AddOns").is_dir()
+            ):
                 return candidate.resolve()
         raise ValueError(
-            f"No Interface/AddOns folder under {folder} or its _forever_ folder."
+            f"Cannot find a WoW Forever installation in {folder}."
         )
     bases = [Path("/Applications"), Path.home() / "Applications"]
     bases.extend(
@@ -38,7 +43,7 @@ def game_folder(explicit, env):
     )
     for base in bases:
         game = base / "World of Warcraft" / "_forever_"
-        if (game / "Interface" / "AddOns").is_dir():
+        if game.is_dir():
             return game
     return None
 
@@ -152,8 +157,17 @@ def settings(path):
     return env
 
 
+def install_client_addon(wow_dir, env):
+    game = game_folder(wow_dir or env.get("WOW_GAME_DIR"), env)
+    if not game:
+        raise ValueError("Supply --wow-dir with the local WoW Forever installation.")
+    install(game)
+    return game
+
+
 def client(root, args):
     env = settings(root / "client.env")
+    game = install_client_addon(args.wow_dir, env)
     upload_url = args.upload_url or (
         env.get("WOW_UPLOAD_URL") if not args.server else None
     )
@@ -162,9 +176,6 @@ def client(root, args):
         raise ValueError(
             "Supply --upload-url with the hosted endpoint or set WOW_UPLOAD_URL in client.env. For a scanner base URL, use --server."
         )
-    game = game_folder(args.wow_dir or env.get("WOW_GAME_DIR"), env)
-    if not game:
-        raise ValueError("Supply --wow-dir with the local WoW Forever installation.")
     if not (env.get("WOW_UPLOAD_TOKEN") or env.get("WOW_UPLOAD_TOKEN_FILE")):
         if not sys.stdin.isatty():
             raise ValueError(
@@ -182,7 +193,10 @@ def client(root, args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("server", "client"), nargs="?")
+    parser.add_argument(
+        "mode", choices=("server", "client", "install"), nargs="?",
+        help="Use client to install and upload, or install for offline add-on setup",
+    )
     target = parser.add_mutually_exclusive_group()
     target.add_argument("--upload-url", help="Full HTTPS endpoint to POST snapshots to")
     target.add_argument(
@@ -209,6 +223,11 @@ def main():
     parser.add_argument("--wow-dir", help="WoW Forever game folder or its parent")
     args = parser.parse_args()
     root = Path(__file__).resolve().parent
+    if args.mode == "install":
+        if any((args.server, args.upload_url, args.once, args.init_only, args.native, args.desktop)):
+            parser.error("install accepts --wow-dir to select the game folder")
+        install_client_addon(args.wow_dir, settings(root / "client.env"))
+        return 0
     if args.mode == "client":
         if args.native or args.init_only or args.desktop:
             parser.error("--native, --init-only and --desktop are server options")
@@ -229,6 +248,8 @@ def main():
             if args.desktop
             else None
         )
+        if game:
+            install(game)
         return docker(root, env, game, desktop=args.desktop)
     env.setdefault("WOW_BIND", "127.0.0.1:" + env.get("WOW_PORT", "8765"))
     env.setdefault("WOW_DATA_DIR", str(root / "local-data"))
@@ -248,6 +269,8 @@ def main():
         if args.wow_dir or args.mode is None
         else None
     )
+    if game:
+        install(game)
     watcher = (
         watcher_command(
             root,

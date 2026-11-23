@@ -6,7 +6,6 @@ import ipaddress
 import json
 import os
 import sys
-import tempfile
 import time
 from http.client import HTTPException
 from pathlib import Path
@@ -14,6 +13,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+from addon import addon_path, atomic, install
 from snapshot import compress, export, fingerprint
 
 
@@ -74,39 +74,6 @@ def request(url, secret, body=None, *, allow_empty=False):
         raise ValueError(
             f"HTTP {e.code}: {e.read(4096).decode(errors='replace')}"
         ) from e
-
-
-def atomic(path, data):
-    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as f:
-        tmp = Path(f.name)
-        try:
-            f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
-        except BaseException:
-            tmp.unlink(missing_ok=True)
-            raise
-    try:
-        os.replace(tmp, path)
-    finally:
-        tmp.unlink(missing_ok=True)
-
-
-def addon_path(game):
-    return game / "Interface" / "AddOns" / "WowAuctionSync"
-
-
-def install(game):
-    if not game.is_dir():
-        raise ValueError("WoW installation folder does not exist")
-    dest = addon_path(game)
-    dest.mkdir(parents=True, exist_ok=True)
-    src = Path(__file__).resolve().parents[1] / "addon" / "WowAuctionSync"
-    for name in ("Queue.lua", "Scanner.lua", "Recipes.lua", "WowAuctionSync.toc"):
-        if name == "Queue.lua" and (dest / name).exists():
-            continue
-        atomic(dest / name, (src / name).read_bytes())
-    print(f"Installed WoW Auction Sync in {dest}")
 
 
 def write_queue(game, q, b):

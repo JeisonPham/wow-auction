@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +12,35 @@ import start
 
 
 class LauncherTests(unittest.TestCase):
+    def test_install_mode_on_a_fresh_game_repairs_files_and_keeps_queue(self):
+        script = Path(start.__file__).resolve()
+        with tempfile.TemporaryDirectory() as folder:
+            base = Path(folder)
+            game = base / "World of Warcraft" / "_forever_"
+            game.mkdir(parents=True)
+            command = [sys.executable, str(script), "install", "--wow-dir", str(game.parent)]
+            def run():
+                return subprocess.run(command, cwd=base, capture_output=True, text=True, check=True).stdout
+
+            self.assertIn("Installed WoW Auction Sync", run())
+            dest = game / "Interface/AddOns/WowAuctionSync"
+            queue = dest / "Queue.lua"
+            queue.write_text("WowAuctionSyncQueue = {items={123}}\n")
+            db = game / "WTF/Account/Test/SavedVariables/WowAuctionSync.lua"
+            db.parent.mkdir(parents=True)
+            db.write_text("WowAuctionSyncDB = {version=1}\n")
+            old_times = {p: p.stat().st_mtime_ns for p in dest.iterdir()}
+            self.assertIn("up to date", run())
+            self.assertEqual(old_times, {p: p.stat().st_mtime_ns for p in dest.iterdir()})
+            (dest / "Opportunities.lua").write_text("-- previous version\n")
+            (dest / "Catalog.lua").unlink()
+            self.assertIn("Updated WoW Auction Sync", run())
+            for name in ("Opportunities.lua", "Catalog.lua"):
+                self.assertEqual((dest / name).read_bytes(),
+                                 (script.parent / "addon/WowAuctionSync" / name).read_bytes())
+            self.assertEqual(queue.read_text(), "WowAuctionSyncQueue = {items={123}}\n")
+            self.assertEqual(db.read_text(), "WowAuctionSyncDB = {version=1}\n")
+
     def test_files_and_scope_used_for_watcher(self):
         with tempfile.TemporaryDirectory() as folder:
             base = Path(folder)
@@ -99,6 +129,7 @@ class LauncherTests(unittest.TestCase):
             )
             with patch("start.subprocess.call", return_value=0) as launch:
                 self.assertEqual(start.client(root, args), 0)
+            self.assertTrue((game / "Interface/AddOns/WowAuctionSync/OpportunityPanel.lua").is_file())
             command = launch.call_args.args[0]
             self.assertIn("https://dashboard.example", command)
             self.assertIn("--watch", command)

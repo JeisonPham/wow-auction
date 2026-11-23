@@ -21,6 +21,13 @@ impl Quote<'_> {
     fn units(&self) -> Option<u64> {
         self.at.map(|_| self.check.map_or(0, |p| p.units))
     }
+    fn listed_below(&self, unit_value: u64) -> bool {
+        self.check.is_some_and(|p| {
+            p.lots.iter().any(|&[size, price, _]| {
+                u128::from(price) < u128::from(unit_value) * u128::from(size)
+            })
+        })
+    }
     fn price(&self, pre: bool) -> Option<(u64, u64)> {
         if !pre && self.at.is_some() {
             self.check.map(|p| (p.total_buyout, p.units))
@@ -259,6 +266,7 @@ fn plan(
                 true,
             );
             if r["profit"].as_i64().unwrap_or(0) > 0
+                || q.listed_below(out)
                 || profit(Some(out), pre["cost"].as_u64()).unwrap_or(0) > 0
             {
                 routes.entry(id).or_default().push(r)
@@ -293,7 +301,11 @@ fn plan(
                 outputs(false),
                 extra.iter().all(|id| quotes[id].check.is_some()),
             );
-            if r["profit"].as_i64().unwrap_or(0) > 0 && r["stock"] != "insufficient" {
+            if (r["profit"].as_i64().unwrap_or(0) > 0 && r["stock"] != "insufficient")
+                || r["proceeds"]
+                    .as_u64()
+                    .is_some_and(|out| q.listed_below(out))
+            {
                 routes.entry(id).or_default().push(r)
             }
         }
@@ -492,7 +504,7 @@ fn plan(
             queue.extend(ids)
         }
     }
-    let items:Vec<_>=quotes.into_iter().map(|(id,q)|json!({"id":id,"name":q.name,"estimate":q.estimate,"estimated_auctions":q.count,"checked_price":q.check.map(|p|p.total_buyout as f64/p.units as f64),"checked_at":q.at,"listed_units":q.units(),"checked_auctions":q.at.map(|_|q.check.map_or(0,|p|p.auctions)),"vendor_sell":q.item.and_then(|i|i.vendor_sell),"max_stack":q.item.and_then(|i|i.max_stack),"routes":routes.remove(&id).unwrap_or_default()})).collect();
+    let items:Vec<_>=quotes.into_iter().map(|(id,q)|json!({"id":id,"name":q.name,"estimate":q.estimate,"estimated_auctions":q.count,"checked_price":q.check.map(|p|p.total_buyout as f64/p.units as f64),"checked_at":q.at,"lots":q.check.map(|p| &p.lots),"vendor_buy":q.item.and_then(|i|i.vendor_buy),"listed_units":q.units(),"checked_auctions":q.at.map(|_|q.check.map_or(0,|p|p.auctions)),"vendor_sell":q.item.and_then(|i|i.vendor_sell),"max_stack":q.item.and_then(|i|i.max_stack),"routes":routes.remove(&id).unwrap_or_default()})).collect();
     let tsm = json!({"source":if desktop{"Desktop AppHelper"}else if est_at>0{"Public DBRecent"}else{"None"},"state":if active{"fresh"}else if est_at>0{"stale"}else{"waiting"},"count":if desktop{obs.estimate_prices.len()}else{feed.items.len()},"observed_at":est_at});
-    json!({"region":region,"market":market,"generated_at":now,"upload_revision":b.map(|b|b.revision),"status":"responsive","tsm":tsm,"items":items,"scan_queue":queue,"queue_estimate_at":if queue.is_empty(){0}else{est_at}})
+    json!({"region":region,"market":market,"generated_at":now,"upload_revision":b.map(|b|b.revision),"status":"responsive","tsm":tsm,"items":items,"scan_queue":queue,"shopping_max_age":age.min(900),"queue_estimate_at":if queue.is_empty(){0}else{est_at}})
 }
