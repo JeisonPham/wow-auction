@@ -103,7 +103,7 @@ footer,
 }
 .stats {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr));
   border: 1px solid var(--line);
   border-radius: 8px;
   overflow: hidden;

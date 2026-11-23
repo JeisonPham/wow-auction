@@ -125,7 +125,7 @@ function setup() {
   $("level").value = p.level;
   $("route").value = p.route || "";
   $("profitability").value = p.profitability || "";
-  $("pricing").value = p.pricing || "listings";
+  $("pricing").value = p.pricing || "estimates";
   $("trainingCost").value = p.trainingCost || "";
   $("trainingCostLabel").hidden = v !== "professions";
   $("batchSize").value = saved.batchSize;
@@ -142,7 +142,7 @@ function setup() {
     v === "market"
       ? [
           ["name", "Item name"],
-          ["estimate", "Highest TSM price"],
+          ["estimate", "Highest latest price"],
           ["units", "Most checked units"],
         ]
       : [
@@ -342,16 +342,26 @@ function render() {
     }
     $("count").textContent = tsm.count.toLocaleString();
     $("source").textContent = tsm.source;
-    if (report.catalog && tsm.source !== "Desktop AppHelper") {
-      $("source").textContent += report.catalog.desktop_at
-        ? " · Desktop last synced " + timestamp(report.catalog.desktop_at)
-        : " · Awaiting desktop sync";
+    if (report.catalog?.desktop_at && tsm.source !== "Desktop AppHelper") {
+      $("source").textContent += " · Desktop last synced " + timestamp(report.catalog.desktop_at);
     }
     $("client-upload").textContent = report.uploaded_at
       ? "Last upload " + timestamp(report.uploaded_at)
       : "Awaiting first client upload";
     $("age").textContent = age(tsm.observed_at);
     $("observed").textContent = timestamp(tsm.observed_at);
+    const broker = report.booty_bay_broker;
+    $("broker-stats").hidden = !(broker?.total || broker?.configured_items);
+    if (!$("broker-stats").hidden) {
+      $("broker-count").textContent = broker.fresh + " of " + broker.total + " fresh";
+      const info = [];
+      if (broker.latest_at) info.push("Latest observation " + timestamp(broker.latest_at));
+      if (broker.configured_items) info.push(broker.last_pull_at
+        ? "Last server pull " + timestamp(broker.last_pull_at)
+        : "Server checking " + broker.configured_items.toLocaleString() + " items");
+      if (broker.pull_error) info.push(broker.pull_error);
+      $("broker-observed").textContent = info.join(" · ");
+    }
     $("coverage").textContent = items
       .filter((i) => i.listed_units != null)
       .length.toLocaleString();
@@ -362,7 +372,7 @@ function render() {
     offline ||
     tsm.error ||
     (tsm.state === "stale"
-      ? "Price estimates have expired. Waiting for a fresh observation."
+      ? "The latest TSM update is stale. Each item shows the newest price available for this market."
       : "");
   $("notice").hidden = !notice;
   $("notice").textContent = notice;
@@ -446,7 +456,7 @@ function render() {
     (market
       ? [
           "Item",
-          "TSM estimate",
+          "Latest unit price",
           "Checked average",
           "Checked units",
           "Last check",
@@ -472,7 +482,7 @@ function render() {
         idx = start + j;
       const cells = market
         ? [
-            money(i.estimate),
+            money(i.estimate) + (i.estimate_source ? "<br><small>" + esc(priceObservation(i)) + "</small>" : ""),
             money(i.checked_price),
             i.listed_units ?? "—",
             age(i.checked_at),
@@ -552,9 +562,11 @@ function render() {
           ? '<tr><td colspan="' +
             (cells.length + 1) +
             '"><div class="detail"><p class="hint">' +
-            esc(tsm.source) +
+            esc(i.estimate_source || (i.estimate != null ? tsm.source : "No recorded auction price")) +
             " · " +
-            timestamp(tsm.observed_at) +
+            timestamp(i.estimate_at ?? (i.estimate != null ? tsm.observed_at : null)) +
+            (i.broker_price ? " · Booty Bay Broker lowest buyout " + money(i.broker_price.price) +
+              " seen " + timestamp(i.broker_price.observed_at) : "") +
             " · Estimated auctions " +
             esc(i.estimated_auctions) +
             " · Checked auctions " +
@@ -587,25 +599,24 @@ function render() {
   $("next").disabled = start + 40 >= rows.length;
   save();
 }
-function marketQuote(item) {
-  if (item.listed_units != null || item.checked_at != null)
-    return {
-      price: item.checked_price,
-      source: "checked",
-      at: item.checked_at,
-    };
-  return {
-    price: item.estimate,
-    source: "estimate",
-    at: report.tsm.observed_at,
-  };
+function priceObservation(item) {
+  if (item?.estimate == null) return "No recorded auction price";
+  return [
+    item.estimate_source,
+    item.estimate_at ? age(item.estimate_at) : "",
+    item.estimate_stale ? "Stale" : "",
+  ].filter(Boolean).join(" · ");
+}
+function lineBasis(line, route) {
+  if (route.shopping || !["estimate", "checked"].includes(line.source)) return line.source;
+  return priceObservation(listingBook.get(line.id));
 }
 function marketSimulationButton(item, idx) {
-  return marketQuote(item).price > 0
+  return item.estimate > 0
     ? '<button class="sim-launch" aria-haspopup="dialog" data-sim-item="' +
         idx +
         '">Simulate unit price</button>'
-    : '<p class="hint">A current auction quote is needed to simulate this price.</p>';
+    : '<p class="hint">No auction price has been recorded for this item.</p>';
 }
 function craftSimulationButton(route) {
   if (
@@ -686,7 +697,7 @@ function openSimulation(name, model, shortages, at) {
         esc(
           {
             checked: "In-game scan",
-            estimate: report.tsm.source,
+            estimate: listingBook.get(line.id)?.estimate_source || report.tsm.source,
             vendor: "Vendor",
           }[line.source],
         ) +
@@ -910,7 +921,7 @@ function calc(i, r) {
   };
 }
 function pricedRoute(i, r) {
-  if (prefs().pricing === "estimates" || view() === "market") return r;
+  if (prefs().pricing !== "listings" || view() === "market") return r;
   const c = calc(i, r);
   const postage = summary(i, r, c).postage;
   const cutoff =
@@ -1055,7 +1066,7 @@ function instructions(i, r, c) {
         " × " +
         l.quantity * c.batch +
         " (" +
-        l.source +
+        lineBasis(l, r) +
         ", " +
         money(l.unit_cost) +
         " each, " +
@@ -1069,7 +1080,7 @@ function instructions(i, r, c) {
         " × " +
         l.quantity * c.batch +
         " (" +
-        l.source +
+        lineBasis(l, r) +
         ", " +
         money(l.unit_cost) +
         " each)",
@@ -1084,7 +1095,7 @@ function instructions(i, r, c) {
       r.stock +
       (r.shopping
         ? " · Current listing prices for this batch. "
-        : " · Checked prices are weighted averages. ") +
+        : " · Latest available prices. In-game prices are unit-weighted averages. ") +
       (destroys(r)
         ? "Random yields; net includes the 5% auction cut and 15% sale reserve."
         : r.kind === "craft_auction"
@@ -1226,7 +1237,7 @@ function detail(i, r, idx, n) {
           " × " +
           l.quantity * c.batch +
           " · " +
-          esc(l.source) +
+          esc(lineBasis(l, r)) +
           " · " +
           money(l.unit_cost) +
           " each · " +
@@ -1244,7 +1255,7 @@ function detail(i, r, idx, n) {
           " · " +
           money(l.unit_cost) +
           " each (" +
-          esc(l.source) +
+          esc(lineBasis(l, r)) +
           ")</li>",
       )
       .join("") +
@@ -1267,7 +1278,7 @@ function detail(i, r, idx, n) {
     esc(r.stock) +
     (r.shopping
       ? " · Current listing prices for this batch."
-      : " · Checked prices are weighted averages.") +
+      : " · Latest available prices. In-game prices are unit-weighted averages.") +
     (destroys(r)
       ? " Expected proceeds include the auction cut and sale reserve. Drops and sale prices vary. " +
         esc(report?.catalog?.disenchant_source || "")
@@ -1324,7 +1335,6 @@ $("body").onclick = async (e) => {
     document.querySelector('[data-row="' + btn.dataset.row + '"]')?.focus();
   } else if (btn.hasAttribute("data-sim-item")) {
     const item = rows[Number(btn.dataset.simItem)].i;
-    const quote = marketQuote(item);
     openSimulation(
       item.name,
       {
@@ -1334,15 +1344,16 @@ $("body").onclick = async (e) => {
         proceeds: null,
         lines: [
           {
+            id: item.id,
             name: item.name,
-            source: quote.source,
+            source: "estimate",
             quantity: 1,
-            unit_cost: quote.price,
+            unit_cost: item.estimate,
           },
         ],
       },
       [],
-      quote.at,
+      item.estimate_at,
     );
   } else if (btn.hasAttribute("data-sim-craft")) {
     const el = btn.closest(".route");

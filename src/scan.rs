@@ -85,6 +85,19 @@ pub struct Capture {
     #[serde(default)]
     pub prices: Book,
     pub listed_units: Map<u32, u64>,
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub checked_at: Map<u32, u64>,
+}
+impl Capture {
+    pub fn time_for(&self, id: u32) -> u64 {
+        self.checked_at
+            .get(&id)
+            .copied()
+            .unwrap_or(self.captured_at)
+    }
+    pub fn times(&self) -> impl Iterator<Item = u64> + '_ {
+        std::iter::once(self.captured_at).chain(self.checked_at.values().copied())
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Bundle {
@@ -204,6 +217,20 @@ impl<'de> Deserialize<'de> for Unique {
         d.deserialize_any(V)
     }
 }
+pub(crate) fn unique_json(raw: &[u8]) -> Result<Value> {
+    let Unique(value) = serde_json::from_slice(raw).map_err(|e| e.to_string())?;
+    Ok(value)
+}
+// Reject aliases such as "01" and "1" before converting map keys to u32.
+pub(crate) fn canonical_ids(map: &Value) -> Result<()> {
+    if let Some(map) = map.as_object() {
+        for key in map.keys() {
+            let id = key.parse::<u32>().map_err(|_| "invalid item ID")?;
+            check(id > 0 && id.to_string() == *key, "invalid item ID spelling")?;
+        }
+    }
+    Ok(())
+}
 pub fn decode(data: &[u8], region: &str, market: &str, now: u64) -> Result<Bundle> {
     check(data.len() <= COMPRESSED, "compressed limit exceeded")?;
     let mut gz = GzDecoder::new(data);
@@ -216,18 +243,8 @@ pub fn decode(data: &[u8], region: &str, market: &str, now: u64) -> Result<Bundl
         raw.len() <= 128 << 20 && gz.into_inner().is_empty(),
         "expanded limit or trailing gzip data",
     )?;
-    let Unique(value) = serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
+    let value = unique_json(&raw)?;
     check(value["snapshot"].is_object(), "expected a snapshot object")?;
-    // Reject aliases such as "01" and "1" before converting map keys to u32.
-    let canonical_ids = |map: &Value| -> Result<()> {
-        if let Some(map) = map.as_object() {
-            for key in map.keys() {
-                let id = key.parse::<u32>().map_err(|_| "invalid item ID")?;
-                check(id > 0 && id.to_string() == *key, "invalid item ID spelling")?;
-            }
-        }
-        Ok(())
-    };
     for field in ["items", "prices", "estimate_prices"] {
         canonical_ids(&value["snapshot"][field])?;
     }
@@ -235,6 +252,7 @@ pub fn decode(data: &[u8], region: &str, market: &str, now: u64) -> Result<Bundl
         for cap in captures {
             canonical_ids(&cap["prices"])?;
             canonical_ids(&cap["listed_units"])?;
+            canonical_ids(&cap["checked_at"])?;
         }
     }
     if let Some(bands) = value["snapshot"]["disenchant"].as_array() {
@@ -305,7 +323,12 @@ pub fn decode(data: &[u8], region: &str, market: &str, now: u64) -> Result<Bundl
     }
     for c in &b.targeted {
         check(
-            c.captured_at > 0 && c.listed_units.len() <= 100000,
+            c.captured_at > 0
+                && c.listed_units.len() <= 100000
+                && c.checked_at.iter().all(|(id, at)| {
+                    c.listed_units.contains_key(id)
+                        && (c.captured_at..=now.saturating_add(300)).contains(at)
+                }),
             "invalid targeted capture",
         )?;
         book(&c.prices, c.captured_at, false, now)?;
@@ -331,7 +354,11 @@ impl Bundle {
         [
             self.snapshot.newest_price_at,
             self.snapshot.estimate_at,
-            self.targeted.first().map_or(0, |c| c.captured_at),
+            self.targeted
+                .iter()
+                .flat_map(Capture::times)
+                .max()
+                .unwrap_or(0),
         ]
     }
 }

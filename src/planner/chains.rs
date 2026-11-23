@@ -33,6 +33,7 @@ struct Step {
 #[derive(Clone, Default)]
 struct Ledger {
     purchases: Map<u32, u32>,
+    shortages: Set<u32>,
     spend: u64,
     steps: Vec<Step>,
     // Bind-on-pickup surplus belongs to the craft that will consume it.
@@ -114,9 +115,8 @@ impl<'a> Search<'a> {
             .iter()
             .filter_map(|id| {
                 let q = &quotes[id];
-                let (_, source, unit) = q.purchase(1, true, false);
-                unit.filter(|_| source == "vendor" || q.units() != Some(0))
-                    .map(|v| (*id, v))
+                let (_, _, unit) = q.purchase(1, true, false);
+                unit.map(|v| (*id, v))
             })
             .collect();
         let mut costs = base.clone();
@@ -161,7 +161,8 @@ impl<'a> Search<'a> {
         let old = state.purchases.get(&id).copied().unwrap_or(0);
         let count = count.checked_add(old)?;
         let (cost, source, _) = q.purchase(count, true, false);
-        if source != "vendor" && q.units().is_some_and(|n| n < u64::from(count)) {
+        let short = source != "vendor" && q.units().is_some_and(|n| n < u64::from(count));
+        if short && q.is_checked() {
             return None;
         }
         let previous = if old == 0 {
@@ -172,6 +173,11 @@ impl<'a> Search<'a> {
         let mut next = state.clone();
         next.spend = next.spend.checked_sub(previous)?.checked_add(cost?)?;
         next.purchases.insert(id, count);
+        if short {
+            next.shortages.insert(id);
+        } else {
+            next.shortages.remove(&id);
+        }
         Some(next)
     }
 
@@ -241,7 +247,10 @@ impl<'a> Search<'a> {
             let Some(mut plan) = candidate else {
                 continue;
             };
-            if best.as_ref().is_some_and(|b| b.spend <= plan.spend) {
+            if best
+                .as_ref()
+                .is_some_and(|b| (b.shortages.len(), b.spend) <= (plan.shortages.len(), plan.spend))
+            {
                 continue;
             }
             if source.destroy {

@@ -74,29 +74,49 @@ fn buckle_and_coverage() {
     assert_eq!(item(&r, 1003)["estimated_auctions"], 15)
 }
 #[test]
-fn freshness_and_whole_books() {
+fn newest_positive_price_is_chosen_per_item_independently_of_stock() {
     let mut f = feed::Feed {
         at: 99,
         ..Default::default()
     };
     f.items.insert(1002, ("Tin".into(), 88));
-    let v = fixture();
+    f.items.insert(1003, ("Iron".into(), 90));
+    let mut v = fixture();
+    v["snapshot"]["newest_price_at"] = json!(100);
+    v["snapshot"]["prices"] = json!({"1001":price(50, 2, 1, 100)});
     let r = report(&v, &f, 101);
-    assert!(item(&r, 1002)["estimate"].is_null());
-    assert_eq!(r["tsm"]["source"], "Desktop AppHelper");
-    f.at = 100;
-    let r = report(&v, &f, 101);
-    assert_eq!(item(&r, 1001)["estimate"], 7);
-    assert!(item(&r, 1002)["estimate"].is_null());
-    let r = report(&v, &f, 200);
-    assert!(item(&r, 1001)["estimate"].is_null());
+    assert_eq!(item(&r, 1001)["estimate"], 5.5); // Targeted beats full at the same time.
+    assert_eq!(item(&r, 1001)["estimate_source"], "In-game item check");
     assert_eq!(item(&r, 1002)["estimate"], 88);
-    let r = report(&v, &Default::default(), 201);
-    assert_eq!(r["tsm"]["state"], "stale");
-    assert!(item(&r, 1001)["estimate"].is_null());
-    assert_eq!(item(&r, 1001)["estimated_auctions"], 6);
-    assert!(item(&r, 1002)["listed_units"].is_null());
-    assert_eq!(r["scan_queue"], json!([]))
+    assert_eq!(item(&r, 1002)["listed_units"], 0);
+    assert_eq!(item(&r, 1003)["estimate_source"], "Desktop AppHelper");
+    f.at = 102;
+    f.items.insert(1001, ("Ore".into(), 11));
+    let r = report(&v, &f, 102);
+    let ore = item(&r, 1001);
+    assert_eq!(ore["estimate"], 11);
+    assert_eq!(ore["estimate_source"], "Public DBRecent");
+    assert_eq!(ore["checked_price"], 5.5);
+    let route = &item(&r, 2000)["routes"][0];
+    assert_eq!(route["cost"], 33);
+    assert_eq!(route["stock"], "estimated");
+    let r = report(&v, &f, 203);
+    assert_eq!(item(&r, 1001)["estimate"], 11);
+    assert_eq!(item(&r, 1001)["estimate_stale"], true);
+    assert_eq!(item(&r, 1001)["estimate_at"], 102);
+    assert!(item(&r, 1001)["listed_units"].is_null());
+    assert_eq!(r["scan_queue"], json!([]));
+    assert!(item(&r, 2000)["estimate"].is_null());
+}
+#[test]
+fn public_rows_keep_individual_timestamps_across_sparse_updates() {
+    let previous = feed::parse(b"itemId,name,recent,updatedAt\n1,Ore,7,1970-01-01T00:01:40Z\n2,Tin,9,1970-01-01T00:01:35Z\n", "", "", 101).unwrap();
+    let mut next = feed::parse(b"itemId,name,recent,updatedAt\n2,Tin,12,1970-01-01T00:01:38Z\n3,Fiber,1,1970-01-01T00:01:25Z\n1,Ore,,1970-01-01T00:01:38Z\n", "", "", 101).unwrap();
+    next.retain_prices_from(&previous);
+    for (id, price, at) in [(1, 7, 100), (2, 12, 98), (3, 1, 85)] {
+        assert_eq!((next.items[&id].1, next.observed_at(id)), (price, at));
+    }
+    assert_eq!(next.at, 100);
 }
 #[test]
 fn vendor_fallback_and_newer_full() {
@@ -480,6 +500,25 @@ fn chains_craft_disenchant_reuse_drops_then_craft_and_vendor() {
     }
 }
 
+#[test]
+fn chain_uses_available_ingredients_before_sold_out_estimates() {
+    let mut v = fixture();
+    let s = &mut v["snapshot"];
+    s["newest_price_at"] = 101.into();
+    s["prices"] = json!({"1001":price(10, 2, 1, 101)});
+    s["estimate_prices"]["3000"] = price(1, 1, 1, 99);
+    s["recipes"] = json!([
+        {"id":"intermediate","output":3000,"quantity":1,"mats":[[1001,1]],"name":"Ring"},
+        {"id":"final","output":2000,"quantity":1,"mats":[[3000,1]],"name":"Buckle"}]);
+    s["items"]["3000"] = json!({"binding":"Unbound"});
+    let r = report(&v, &Default::default(), 101);
+    let routes = item(&r, 2000)["routes"].as_array().unwrap();
+    assert_eq!(routes[0]["cost"], 1);
+    assert_eq!(routes[0]["stock"], "insufficient");
+    let chained = routes.iter().find(|r| r["stages"].is_array()).unwrap();
+    assert_eq!(chained["cost"], 5);
+    assert_eq!(chained["stock"], "verified");
+}
 #[test]
 fn reversible_recipes_do_not_bootstrap_free_reagents() {
     let mut v = fixture();

@@ -10,6 +10,8 @@ services:
       WOW_REGION: ${WOW_REGION:-Forever-US}
       WOW_MARKET: ${WOW_MARKET:-Normal-Alliance}
       WOW_TSM_PUBLIC: ${WOW_TSM_PUBLIC:-1}
+      WOW_BROKER_URLS: ${WOW_BROKER_URLS:-}
+      WOW_BROKER_DELAY_SECONDS: ${WOW_BROKER_DELAY_SECONDS:-5}
       WOW_MAX_AGE_SECONDS: ${WOW_MAX_AGE_SECONDS:-21600}
     volumes:
       - dashboard-data:/data

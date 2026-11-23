@@ -57,7 +57,7 @@ class LauncherTests(unittest.TestCase):
             for value in (
                 str(game),
                 "https://auction.example",
-                "--require-desktop",
+                "--auction-house-only",
                 "Forever-EU",
                 "PvP-Horde",
                 "--watch",

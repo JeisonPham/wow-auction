@@ -2,6 +2,7 @@ pub mod catalog;
 pub mod disenchant;
 pub mod feed;
 pub mod planner;
+mod prices;
 mod professions;
 pub mod scan;
 pub mod service;

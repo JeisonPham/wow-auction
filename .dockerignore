@@ -7,6 +7,7 @@
 !web/**
 !client/
 !client/sync.py
+!client/broker.py
 !client/addon.py
 !client/snapshot.py
 !client/lua_data.py

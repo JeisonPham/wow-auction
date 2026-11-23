@@ -37,12 +37,16 @@
           >
         </div>
         <div>
-          <small>Estimate age</small><strong id="age">—</strong
+          <small>TSM estimate age</small><strong id="age">—</strong
           ><span id="observed"></span>
         </div>
         <div>
           <small>Items checked in game</small><strong id="coverage">—</strong
           ><span>Includes checked-empty items</span>
+        </div>
+        <div id="broker-stats" hidden>
+          <small>Booty Bay Broker prices</small><strong id="broker-count">—</strong>
+          <span id="broker-observed"></span>
         </div>
       </div>
       <nav aria-label="Dashboard views">
@@ -72,8 +76,8 @@
             </select></label
           ><label id="pricingLabel"
             >Price basis<select id="pricing">
+              <option value="estimates">Latest available prices</option>
               <option value="listings">Current listings</option>
-              <option value="estimates">Planning estimates</option>
             </select></label
           ><label id="profitabilityLabel"
             >Profit per run<select id="profitability">

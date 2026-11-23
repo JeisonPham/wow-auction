@@ -12,7 +12,7 @@ SAVED_DATABASES = {
 }
 
 
-def inputs(game):
+def inputs(game, include_apphelper=True):
     addons = game / "Interface" / "AddOns"
     files = set()
     files.update(
@@ -20,7 +20,8 @@ def inputs(game):
         for p in game.glob("WTF/Account/*/SavedVariables/*")
         if p.name.lower() in SAVED_DATABASES and p.is_file()
     )
-    files.update((addons / "TradeSkillMaster_AppHelper").rglob("AppData*.lua"))
+    if include_apphelper:
+        files.update((addons / "TradeSkillMaster_AppHelper").rglob("AppData*.lua"))
     base = addons / "TradeSkillMaster" / "LibTSMData"
     files.update(
         p
@@ -33,9 +34,9 @@ def inputs(game):
     return sorted(files)
 
 
-def fingerprint(game):
+def fingerprint(game, include_apphelper=True):
     result = []
-    for path in inputs(game):
+    for path in inputs(game, include_apphelper):
         s = path.stat()
         result.append((path, s.st_mtime_ns, s.st_size))
     return tuple(result)
@@ -138,6 +139,8 @@ def pack_checks(observations, full_time):
     for item, (observed, price) in observations.items():
         at = stamp[observed]
         group = groups.setdefault(at, dict(captured_at=at, prices={}, listed_units={}))
+        if observed != at:
+            group.setdefault("checked_at", {})[item] = observed
         group["listed_units"][item] = price["units"] if price else 0
         if price:
             group["prices"][item] = dict(price, observed_at=at)

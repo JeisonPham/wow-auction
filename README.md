@@ -9,7 +9,7 @@ A local auction scanner and market dashboard for WoW Forever. The scanner evalua
 ### Connect to your server
 
 1. Get the **server URL**, **upload token**, **region**, and **market** from your host. The upload token is the password the API uses to accept uploads. If you host the bundled scanner yourself, use the value of `WOW_UPLOAD_TOKEN` from the server’s `.env` beside `start.py`. For a new server, follow [Host on a domain](#host-on-a-domain).
-2. On the gaming PC, extract the **full scanner source package** and open the folder containing `start.py`. The launcher runs with Python 3. Start TSM Desktop, enable AppHelper for your WoW Forever installation, and let it sync your market. The uploader waits for AppHelper prices before sending scans. [TSM Desktop setup](https://support.tradeskillmaster.com/tsm-desktop-application/how-do-i-set-up-the-tsm-desktop-application)
+2. On the gaming PC, extract the **full scanner source package** and open the folder containing `start.py`. The launcher runs with Python 3. The add-on reads auction listings in WoW, and the client uploads those saved listings, stack sizes and buyouts as soon as you reload or log out. TSM Desktop is optional.
 3. Create a plain-text file named **`client.env`** beside `start.py` on the gaming PC. For the bundled scanner, use the following example. Replace `auction.example.com` with your domain and use the same region and market as your server.
 
 ```dotenv
@@ -52,6 +52,23 @@ For a host that gave you an exact endpoint, use `--upload-url "https://auction.e
 4. Open your bundled dashboard at `https://auction.example.com/`. Check **Last upload** for the receipt time, then open **Market prices**, find an item you scanned, and check its **Last check**, **Checked units**, and **Checked average**. For a second confirmation, open `https://auction.example.com/api/status` and match `upload_revision` to the number in your terminal. For a custom upload-only API, use its receipt and the verification view your host provides.
 
 **During play**, use **Recheck route** before buying or **Follow** to recheck the selected route about once a minute while the panel and auction house stay open. Type `/reload` after a completed recheck when you want the web dashboard to receive it. [In-game opportunity controls](#find-opportunities-at-the-auction-house)
+
+### Import Booty Bay Broker prices
+
+The **server** can fetch Booty Bay Broker prices while your gaming PC is offline. The **gaming client** reads listings at the in-game auction house. Open **Market prices** to see both observations. **Latest available prices** compares the observation times from your scan, TSM and Broker for each item in the matching market. **Current listings** and TSM shopping ceilings use your in-game stack sizes, quantities and buyouts.
+
+1. On the **server**, open the `.env` beside `compose.yaml`. Set `WOW_BROKER_URLS=auto` to build the watchlist from the bundled recipe catalog. This covers auctionable reagents, crafted outputs and disenchant materials, including unlearned recipes. The server checks shared reagents first and queries each distinct item once per pass. Booty Bay Broker requires prior written permission for automated collection with either automatic selection or a manual watchlist. [Booty Bay Broker terms, section 4](https://bootybaybroker.com/terms)
+
+```dotenv
+WOW_BROKER_URLS=auto
+WOW_BROKER_DELAY_SECONDS=5
+```
+
+2. In the server project folder, run `docker compose up -d --build --wait`. Prices appear as individual pages complete. At the default five-second delay a catalog pass takes at least 2 hours 48 minutes, plus request time. The next pass starts an hour after completion. The server reads **Lowest buyout** and **Last seen** for its configured region, ruleset and faction. Missing listings leave previous observations at their original timestamps. A rate limit delays further requests, and an access denial pauses fetching until restart.
+3. On the dashboard, **Booty Bay Broker prices** shows fresh coverage, the last server pull and any error. Use `docker compose logs -f dashboard` for the pull log. Expand an item to see its Broker buyout and observation time. A scan that finds zero stock updates the checked quantity. The latest recorded unit price remains available for planning.
+4. On the **gaming PC**, run `py -3 start.py client` (macOS or Linux: `python3 start.py client`), scan at the auction house and type `/reload` to upload. The client uses the prices observed in WoW and works without TSM Desktop. To also upload existing TSM AppHelper estimates for planning, run `start.py client --include-tsm` with your usual Python command.
+
+To track specific items, set `WOW_BROKER_URLS` to a space-separated list of English WoW Forever item-page URLs instead of `auto`. An empty setting disables Broker requests. For a one-time import of saved pages, `python3 start.py broker --html "Runecloth.html" --preview` shows the parsed copper price and timestamp locally. Omit `--preview` and supply the bundled server URL and upload token to send it. This manual uploader accepts the existing `client.env` settings. Older observations cannot overwrite newer prices. [Example item page](https://bootybaybroker.com/forever/item/14047/runecloth)
 
 ### Custom endpoint contract
 
@@ -100,24 +117,26 @@ On the gaming PC, install the updated **WoW Auction Sync** add-on using the [ins
 
 The in-game planner compares whole-stack costs with known vendor prices. It compares a direct recipe with locally priced intermediate crafts and disenchant steps up to three levels deep. For each reagent it considers the lowest unit-cost producer from the previous level and prices the combined shopping list against available stock. Other combinations can be cheaper. Auction exits use the lowest scanned ask, a 5% auction cut and a 15% sale reserve. Craft output and disenchant materials use planning quantities and expected yields. In-game margins cover purchases for the selected batch and assume no mailing charges.
 
-To publish the new prices to the web dashboard, type `/reload` after scanning and keep the updated PC uploader running. The uploader preserves individual search times and consolidates older timestamps conservatively if needed to fit the API’s 128-capture limit.
+To publish the new prices to the web dashboard, type `/reload` after scanning and keep the updated PC uploader running. The uploader preserves each item’s search time, including when it groups a long sweep into the API’s 128-capture limit. Older uploads use the timestamps they recorded.
 
 ### Use the web dashboard
 
 Open **Opportunities** or **Professions** to see all crafts the planner evaluates for your market, including unlearned recipes and crafts with insufficient reagent stock. **Profit per run** defaults to **All margins**. Choose **Profitable** for gains above zero, **Break-even** for zero profit, **Loss** for negative profit, or **Unknown** when the planner lacks a cost or sale value. Check the **Stock** column separately for reagent availability.
+
+**Price basis** defaults to **Latest available prices**. For each item, the server compares your full and targeted scans, TSM (public DBRecent and any uploaded Desktop AppHelper data), and Booty Bay Broker for the same market. The newest positive unit price wins, using the time the source observed it. At equal times, a targeted check wins, followed by a full scan, TSM Desktop, public TSM and Broker. A scan with zero stock updates availability and keeps the last known price for planning. Older prices retain their timestamps and show **Stale** after the server's freshness window (six hours by default). Expand a route to see the price source and age for each auction reagent.
 
 Pick **Craft → vendor**, **Craft → disenchant**, or **Craft → auction** in the route filter. The table shows the cost and profit per recipe run. Expand a row for reagents, quantities, qualifications, price sources, cooldowns when known and batch calculations. Eligible direct buy-to-vendor and buy-to-disenchant routes are also supported.
 
 ### Buy reagents at a profitable price in TSM
 
 1. Update the server, PC uploader and **WoW Auction Sync** add-on. Follow the [add-on installation steps](#install-or-update-the-gaming-pc-add-on), restart the uploader and type `/reload` to load the updated add-on. At the capital auction house run `/wamsync full`. After **Scan complete**, type `/reload` again to upload the listings. A targeted `/wamsync scan` also works when the queue covers the necessary items.
-2. Open **Opportunities** or **Professions**, leave **Price basis** on **Current listings** and set **Batch size (runs)**. The profit filter, rankings and costs use that batch. The scanner counts the cash needed for whole stacks, compares vendor inputs when available, and includes the selected postage. For auction sales it uses the lowest scanned unit ask after the auction cut and sale reserve. Disenchanting uses expected drops and variable-yield recipes use their planning quantity.
+2. Open **Opportunities** or **Professions**, set **Price basis** to **Current listings** and set **Batch size (runs)**. The profit filter, rankings and costs use that batch. The scanner counts the cash needed for whole stacks, compares vendor inputs when available, and includes the selected postage. For auction sales it uses the lowest scanned unit ask after the auction cut and sale reserve. Disenchanting uses expected drops and variable-yield recipes use their planning quantity.
 3. Expand the route. Under **TSM shopping ceilings**, set **Minimum batch profit (copper)**. The default reserves one copper for the entire batch. For example, a 1g vendor payout with 20s of fixed costs and a 10s profit target leaves 70s for reagents. If the only purchase is 10 ore, the ceiling is 7s per ore. With multiple reagents, the dashboard splits the same budget in proportion to the scanned cost of each purchase and rounds each ceiling down.
 4. Use **Copy search** beside each reagent and paste it in TSM's Shopping search at the auction house. It matches the item name, applies the maximum unit price and includes the shopping quantity. Check the stack size before confirming each purchase. Buying extra units can exceed the batch budget. Refresh the scan and copy new searches if prices, quantities, or the target change. [TSM Shopping search filters](https://support.tradeskillmaster.com/addon/how-do-i-filter-items-in-my-groups-or-the-base-group)
 
 **Current listings** requires auction quotes from the last 15 minutes, or sooner if the server expires quotes earlier. Missing listing detail, expired quotes or too little stock give an **Unknown** batch margin. When the scanned batch falls short of the target, the dashboard can still give a lower buy ceiling to shop for. A copied search keeps its numeric ceiling until you replace it. For large batches with many different stack sizes, the scanner estimates a purchasable combination by unit price and compares finishing stacks. Projected auction proceeds depend on finding a buyer at the modeled sale price.
 
-Choose **Planning estimates** to browse older uploads, checked averages and TSM estimates. Buying ceilings are available under **Current listings**.
+Buying ceilings are available under **Current listings**.
 
 **Max. character level** includes routes at or below your limit. It checks profession ranks, recipe and pattern learning levels, and disenchanting across every step. If a bind-on-pickup pattern comes only from quests in the catalog, the crafter must also meet the minimum level to accept a qualifying quest. Expand a route to see the pattern and its recorded level requirements. A plain buy-to-vendor route is available at level 1. Routes with an unknown level are hidden while a limit is set. Clear the field to see them again.
 
@@ -153,9 +172,10 @@ _forever_/WTF/Account/<account>/SavedVariables/WowAuctionSync.lua
 | **HTTP 401: invalid bearer token** | Use the value of the host’s upload token at the prompt, without the `WOW_UPLOAD_TOKEN=` prefix or the word `Bearer`. If the uploader uses a token file or an environment variable, check that value and restart the client. |
 | **HTTP 404** or an unexpected HTML response | Check the URL setting. Use the domain root with `WOW_SERVER_URL`, or the exact upload path with `WOW_UPLOAD_URL`. On a self-hosted server, verify that the reverse proxy forwards `/api/scans`. |
 | **HTTP 422** with a scope mismatch | Compare `WOW_REGION` and `WOW_MARKET` in the PC’s `client.env` with the region and market shown on the server dashboard. |
-| **No saved database in WowAuctionSync.lua** | Update the add-on and restart the uploader from the same extracted package. In WoW, run `/reload`, `/wamsync roster`, then `/reload` again. Check the file above for your active account. The updated uploader can skip an empty account file when another account or TSM has data for the selected market. |
+| **No saved database in WowAuctionSync.lua** | Update the add-on and restart the uploader from the same extracted package. In WoW, run `/reload`, `/wamsync roster`, then `/reload` again. Check the file above for your active account. The uploader can skip an empty account file when another account has data for the selected market. |
 | **Waiting for in-game data** | Run `/wamsync status` and compare its region and market with the uploader's settings. Confirm that `--wow-dir` points to the installation you play. After a roster capture or completed scan, use `/reload` and check the file path printed by the uploader. |
-| **Waiting for TSM Desktop AppHelper prices** | Open TSM Desktop and check that AppHelper is enabled and has synced the selected Forever market. The `start.py client` watcher needs a populated price book for that market before uploading. |
+| **Waiting for TSM Desktop AppHelper prices** | Update the PC files and restart with `start.py client` to upload saved auction-house scans. If you opted into TSM estimates, confirm that AppHelper has synced the selected market. |
+| A route still shows **Unknown** after upload | Choose **Latest available prices**. Expand the route to identify a reagent with **No recorded auction price** or a missing sale value. In **Market prices**, compare **Latest unit price** with **Checked units** for that item. |
 | **Scan complete** in chat but no new checked prices on the dashboard | Type `/reload` and keep the PC uploader running. After an upload receipt, open **Market prices** and check **Checked average** and **Checked units** for a scanned item. |
 
 For an existing portable bundle, use `python3 client/sync.py sync --bundle scan.json.gz --server URL` with the server token in the environment.

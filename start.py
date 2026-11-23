@@ -49,7 +49,7 @@ def game_folder(explicit, env):
 
 
 def watcher_command(
-    root, env, game, url, watch=True, require_desktop=True, exact=False
+    root, env, game, url, watch=True, include_tsm=False, exact=False
 ):
     command = [
         sys.executable,
@@ -64,11 +64,11 @@ def watcher_command(
         "--market",
         env.get("WOW_MARKET", "Normal-Alliance"),
     ]
-    if require_desktop:
-        command.append("--require-desktop")
+    if not include_tsm:
+        command.append("--auction-house-only")
     if watch:
         command.append("--watch")
-    print(f"Reading TSM AppHelper and character exports in {game}", flush=True)
+    print(f"Reading saved auction-house scans and character exports in {game}", flush=True)
     return command
 
 
@@ -184,7 +184,8 @@ def client(root, args):
         env["WOW_UPLOAD_TOKEN"] = getpass.getpass("API bearer token: ")
     return subprocess.call(
         watcher_command(
-            root, env, game, url, watch=not args.once, exact=bool(upload_url)
+            root, env, game, url, watch=not args.once, exact=bool(upload_url),
+            include_tsm=getattr(args, "include_tsm", False)
         ),
         cwd=root,
         env=env,
@@ -192,10 +193,14 @@ def client(root, args):
 
 
 def main():
+    root = Path(__file__).resolve().parent
+    if sys.argv[1:2] == ["broker"]:
+        return subprocess.call([sys.executable, str(root / "client" / "broker.py"), *sys.argv[2:]],
+                               env=settings(root / "client.env"))
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "mode", choices=("server", "client", "install"), nargs="?",
-        help="Use client to install and upload, or install for offline add-on setup",
+        "mode", choices=("server", "client", "install", "broker"), nargs="?",
+        help="Use client to install and upload, install for offline add-on setup, or broker --help for price imports",
     )
     target = parser.add_mutually_exclusive_group()
     target.add_argument("--upload-url", help="Full HTTPS endpoint to POST snapshots to")
@@ -205,6 +210,7 @@ def main():
     parser.add_argument(
         "--once", action="store_true", help="Upload once and exit (client mode)"
     )
+    parser.add_argument("--include-tsm", action="store_true", help="Also upload local TSM AppHelper planning estimates (client mode)")
     parser.add_argument(
         "--desktop",
         action="store_true",
@@ -222,7 +228,8 @@ def main():
     )
     parser.add_argument("--wow-dir", help="WoW Forever game folder or its parent")
     args = parser.parse_args()
-    root = Path(__file__).resolve().parent
+    if args.include_tsm and args.mode != "client":
+        parser.error("--include-tsm is a client option")
     if args.mode == "install":
         if any((args.server, args.upload_url, args.once, args.init_only, args.native, args.desktop)):
             parser.error("install accepts --wow-dir to select the game folder")
@@ -253,6 +260,8 @@ def main():
         return docker(root, env, game, desktop=args.desktop)
     env.setdefault("WOW_BIND", "127.0.0.1:" + env.get("WOW_PORT", "8765"))
     env.setdefault("WOW_DATA_DIR", str(root / "local-data"))
+    env.setdefault("WOW_BROKER_HELPER", str(root / "client" / "broker.py"))
+    env.setdefault("WOW_BROKER_PYTHON", sys.executable)
     binary = (
         root
         / "target"
@@ -277,7 +286,7 @@ def main():
             env,
             game,
             "http://127.0.0.1:" + env["WOW_BIND"].rsplit(":", 1)[-1],
-            require_desktop=False,
+            include_tsm=True,
         )
         if game
         else None

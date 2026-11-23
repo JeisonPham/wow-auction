@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from addon import addon_path, atomic, install
-from snapshot import compress, export, fingerprint
+from snapshot import SAVED_DATABASES, compress, export, fingerprint
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -56,10 +56,10 @@ def token(*, scanner=True):
     return value
 
 
-def request(url, secret, body=None, *, allow_empty=False):
+def request(url, secret, body=None, *, allow_empty=False, content_type="application/gzip"):
     headers = {"Authorization": "Bearer " + secret}
     if body is not None:
-        headers["Content-Type"] = "application/gzip"
+        headers["Content-Type"] = content_type
     req = Request(url, data=body, headers=headers)
     try:
         with build_opener(NoRedirect()).open(req, timeout=90) as response:
@@ -123,13 +123,16 @@ def sync(args):
     secret = token(scanner=not custom_url)
     previous = None
     bundle = None
+    auction_only = getattr(args, "auction_house_only", False)
     while True:
         try:
             if args.bundle:
                 stat = args.bundle.stat()
                 sig = (stat.st_mtime_ns, stat.st_size)
             else:
-                sig = fingerprint(args.wow_dir)
+                sig = fingerprint(args.wow_dir, include_apphelper=not auction_only)
+                if auction_only and not any(path.name.lower() in SAVED_DATABASES for path, _, _ in sig):
+                    raise ValueError("Waiting for in-game data. Finish /wamsync full or /wamsync roster, then /reload in WoW.")
             if sig != previous:
                 if args.bundle:
                     if stat.st_size > 32 << 20:
@@ -147,7 +150,7 @@ def sync(args):
                     try:
                         bundle = export(sig, args.region, args.market)
                     except (OSError, ValueError, KeyError, IndexError):
-                        if sig != fingerprint(args.wow_dir):
+                        if sig != fingerprint(args.wow_dir, include_apphelper=not auction_only):
                             continue
                         raise
                     if getattr(args, "require_desktop", False) and not bundle[
@@ -157,7 +160,7 @@ def sync(args):
                             f"Waiting for TSM Desktop AppHelper prices for {args.region} / {args.market}."
                         )
                     raw = compress(bundle)
-                    if sig != fingerprint(args.wow_dir):
+                    if sig != fingerprint(args.wow_dir, include_apphelper=not auction_only):
                         continue
                 receipt = request(upload_url, secret, raw, allow_empty=bool(custom_url))
                 if (
@@ -167,9 +170,14 @@ def sync(args):
                     raise ValueError("Server acknowledged a different revision")
                 status = (receipt or {}).get("status", "uploaded")
                 previous = sig
-                count = len(bundle["snapshot"].get("estimate_prices", {}))
+                snap = bundle["snapshot"]
+                full_count = len(snap.get("prices", {}))
+                checks = {item for capture in bundle.get("targeted", []) for item in capture["listed_units"]}
+                summary = f"full-scan items {full_count}, targeted items {len(checks)}"
+                if snap.get("estimate_prices"):
+                    summary += f", {len(snap['estimate_prices'])} Desktop AppHelper prices"
                 print(
-                    f"{status} revision {bundle['revision']} · {count} Desktop AppHelper prices for {bundle['region']} / {bundle['market']}",
+                    f"{status} revision {bundle['revision']} · {summary} for {bundle['region']} / {bundle['market']}",
                     flush=True,
                 )
             if queue_url and args.wow_dir and addon_path(args.wow_dir).is_dir():
@@ -200,7 +208,10 @@ def main():
     s.add_argument("--region", default="Forever-US")
     s.add_argument("--market", default="Normal-Alliance")
     s.add_argument("--watch", action="store_true")
-    s.add_argument(
+    sources = s.add_mutually_exclusive_group()
+    sources.add_argument("--auction-house-only", action="store_true",
+                         help="Read saved in-game observations and character data; skip TSM price files")
+    sources.add_argument(
         "--require-desktop",
         action="store_true",
         help="Wait for a populated AppHelper book before uploading game files",

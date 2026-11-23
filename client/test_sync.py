@@ -34,6 +34,9 @@ class ScannerTests(unittest.TestCase):
         self.assertLessEqual(len(caps), 128)
         self.assertEqual(caps[0]["captured_at"], 1000)
         exported = {int(k): c["captured_at"] for c in caps for k in c["listed_units"]}
+        for cap in caps:
+            for item in cap["listed_units"]:
+                self.assertEqual(cap.get("checked_at", {}).get(item, cap["captured_at"]), int(item))
         self.assertEqual(len(exported), 1000)
         self.assertTrue(all(t <= k and (t >= 501) == (k >= 501) for k,t in exported.items()))
 

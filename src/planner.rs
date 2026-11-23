@@ -1,6 +1,11 @@
 mod chains;
 mod timing;
-use crate::{feed::Feed, fresh, scan::*};
+use crate::{
+    feed::{BrokerBook, Feed},
+    fresh,
+    prices::{Observation, Prices, Source},
+    scan::*,
+};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap as Map, BTreeSet as Set};
 
@@ -8,8 +13,8 @@ use std::collections::{BTreeMap as Map, BTreeSet as Set};
 struct Quote<'a> {
     name: String,
     item: Option<&'a Item>,
-    estimate: Option<u64>,
-    count: Option<u64>,
+    latest: Option<Observation>,
+    fresh_price: bool,
     check: Option<&'a Price>,
     at: Option<u64>,
 }
@@ -28,12 +33,25 @@ impl Quote<'_> {
             })
         })
     }
-    fn price(&self, pre: bool) -> Option<(u64, u64)> {
-        if !pre && self.at.is_some() {
-            self.check.map(|p| (p.total_buyout, p.units))
+    fn is_checked(&self) -> bool {
+        self.latest.zip(self.check).is_some_and(|(q, p)| {
+            matches!(q.source, Source::Full | Source::Targeted)
+                && Some(q.at) == self.at
+                && q.total == p.total_buyout
+                && q.units == p.units
+        })
+    }
+    fn basis(&self) -> &'static str {
+        if self.is_checked() {
+            "checked"
         } else {
-            self.estimate.map(|p| (p, 1))
+            "estimate"
         }
+    }
+    fn price(&self, fresh_only: bool) -> Option<(u64, u64)> {
+        self.latest
+            .filter(|_| !fresh_only || self.fresh_price)
+            .map(|q| (q.total, q.units))
     }
     fn transferable(&self) -> bool {
         self.item.is_some_and(|i| {
@@ -63,16 +81,16 @@ impl Quote<'_> {
         } else {
             (
                 cost,
-                if self.bound() {
-                    "bound"
-                } else if !pre && self.at.is_some() {
-                    "checked"
-                } else {
-                    "estimate"
-                },
+                if self.bound() { "bound" } else { self.basis() },
                 price.map(|(p, n)| p as f64 / n as f64),
             )
         }
+    }
+    fn output(&self, id: u32, quantity: f64) -> Value {
+        json!({
+            "id": id, "name": self.name, "quantity": quantity,
+            "unit_cost": self.latest.map(Observation::unit), "source": self.basis(),
+        })
     }
     fn line(&self, id: u32, q: u32, craft: bool, pre: bool) -> Value {
         let (cost, source, unit) = self.purchase(q, craft, pre);
@@ -138,7 +156,18 @@ pub fn report(
 ) -> Value {
     let empty = Snapshot::default();
     let raw = b.map_or(&empty, |b| &b.snapshot);
-    plan(region, market, b, feed, age, now, raw, false)
+    plan(
+        region,
+        market,
+        b,
+        feed,
+        &BrokerBook::default(),
+        &Prices::default(),
+        age,
+        now,
+        raw,
+        false,
+    )
 }
 pub fn market_report(
     region: &str,
@@ -148,12 +177,47 @@ pub fn market_report(
     age: u64,
     now: u64,
 ) -> Value {
+    market_report_with_broker(region, market, b, feed, &BrokerBook::default(), age, now)
+}
+pub fn market_report_with_broker(
+    region: &str,
+    market: &str,
+    b: Option<&Bundle>,
+    feed: &Feed,
+    broker: &BrokerBook,
+    age: u64,
+    now: u64,
+) -> Value {
+    market_report_with_history(
+        region,
+        market,
+        b,
+        feed,
+        broker,
+        &Prices::default(),
+        age,
+        now,
+    )
+}
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn market_report_with_history(
+    region: &str,
+    market: &str,
+    b: Option<&Bundle>,
+    feed: &Feed,
+    broker: &BrokerBook,
+    history: &Prices,
+    age: u64,
+    now: u64,
+) -> Value {
     let empty = Snapshot::default();
     let player = b.map_or(&empty, |b| &b.snapshot);
     let cat = &crate::catalog::FOREVER;
     let merged = cat.for_player(player);
     let bundled_de = player.disenchant.is_empty() || player.non_disenchantable.is_none();
-    let mut r = plan(region, market, b, feed, age, now, &merged, bundled_de);
+    let mut r = plan(
+        region, market, b, feed, broker, history, age, now, &merged, bundled_de,
+    );
     r["catalog"] = json!({"build":cat.build,"recipes":merged.recipes.len(),"items":merged.items.len(),
         "characters":merged.professions.len(),"desktop_at":player.estimate_at,
         "disenchant_source":if bundled_de {"Forever level brackets / Classic drop estimates"} else {"Installed TSM tables"}});
@@ -165,6 +229,8 @@ fn plan(
     market: &str,
     b: Option<&Bundle>,
     feed: &Feed,
+    broker: &BrokerBook,
+    history: &Prices,
     age: u64,
     now: u64,
     s: &Snapshot,
@@ -172,27 +238,24 @@ fn plan(
 ) -> Value {
     let empty = Snapshot::default();
     let obs = b.map_or(&empty, |b| &b.snapshot);
-    let desktop = obs.estimate_at > 0
-        && !obs.estimate_prices.is_empty()
-        && (fresh(obs.estimate_at, now, age) || obs.estimate_at >= feed.at);
+    let desktop =
+        obs.estimate_at > 0 && !obs.estimate_prices.is_empty() && obs.estimate_at >= feed.at;
     let est_at = if desktop { obs.estimate_at } else { feed.at };
     let active = fresh(est_at, now, age);
-    let mut ids: Set<_> = s
-        .items
-        .keys()
-        .chain(obs.prices.keys())
-        .chain(obs.estimate_prices.keys())
-        .chain(feed.items.keys())
-        .copied()
-        .collect();
+    let latest = history.resolve(b, feed, broker);
+    let mut ids: Set<_> = s.items.keys().chain(latest.0.keys()).copied().collect();
     let full = fresh(obs.newest_price_at, now, age);
     let mut target = Map::new();
     if let Some(b) = b {
         for c in &b.targeted {
-            ids.extend(c.listed_units.keys());
-            if fresh(c.captured_at, now, age) && (!full || c.captured_at >= obs.newest_price_at) {
-                for id in c.listed_units.keys() {
-                    target.entry(*id).or_insert(c);
+            for &id in c.listed_units.keys() {
+                ids.insert(id);
+                let at = c.time_for(id);
+                if fresh(at, now, age)
+                    && (!full || at >= obs.newest_price_at)
+                    && target.get(&id).is_none_or(|(previous, _)| at > *previous)
+                {
+                    target.insert(id, (at, c.prices.get(&id)));
                 }
             }
         }
@@ -213,14 +276,9 @@ fn plan(
     for id in ids {
         let item = s.items.get(&id);
         let public = feed.items.get(&id);
-        let (p, count) = if desktop {
-            let p = obs.estimate_prices.get(&id);
-            (p.map(|p| p.total_buyout), p.map(|p| p.auctions))
-        } else {
-            (public.map(|v| v.1), None)
-        };
-        let (at, check) = if let Some(c) = target.get(&id) {
-            (Some(c.captured_at), c.prices.get(&id))
+        let price = latest.0.get(&id).copied();
+        let (at, check) = if let Some(&(at, price)) = target.get(&id) {
+            (Some(at), price)
         } else if full {
             (Some(obs.newest_price_at), obs.prices.get(&id))
         } else {
@@ -237,8 +295,8 @@ fn plan(
             Quote {
                 name,
                 item,
-                estimate: p.filter(|_| active),
-                count,
+                latest: price,
+                fresh_price: price.is_some_and(|p| fresh(p.at, now, age)),
                 check,
                 at,
             },
@@ -294,12 +352,16 @@ fn plan(
                 outputs(true),
                 &extra,
             );
-            let drops:Vec<_>=d.mats.iter().map(|(id,n)|{let o=&quotes[id];json!({"id":id,"name":o.name,"quantity":n,"unit_cost":o.price(false).map(|(p,u)|p as f64/u as f64),"source":if o.check.is_some(){"checked"}else{"estimate"}})}).collect();
+            let drops: Vec<_> = d
+                .mats
+                .iter()
+                .map(|(&id, &n)| quotes[&id].output(id, n))
+                .collect();
             let r = finish(
                 json!({"kind":"disenchant","quantity":1,"name":"Disenchant","ready":ready,"advice":advice,"profession":"Enchanting","requirements":{"skill":skill},"characters":chars,"outputs":drops}),
                 vec![q.line(id, 1, false, false)],
                 outputs(false),
-                extra.iter().all(|id| quotes[id].check.is_some()),
+                extra.iter().all(|id| quotes[id].is_checked()),
             );
             if (r["profit"].as_i64().unwrap_or(0) > 0 && r["stock"] != "insufficient")
                 || r["proceeds"]
@@ -374,7 +436,7 @@ fn plan(
                     meta,
                     current.clone(),
                     Some(net),
-                    quotes[&recipe.output].check.is_some(),
+                    quotes[&recipe.output].is_checked(),
                 ));
             }
         }
@@ -392,7 +454,11 @@ fn plan(
                 sell(true),
                 &extra,
             );
-            let drops:Vec<_>=band.mats.iter().map(|(id,n)|{let q=&quotes[id];json!({"id":id,"name":q.name,"quantity":n*f64::from(recipe.quantity),"unit_cost":q.price(false).map(|(p,u)|p as f64/u as f64),"source":if q.check.is_some(){"checked"}else{"estimate"}})}).collect();
+            let drops: Vec<_> = band
+                .mats
+                .iter()
+                .map(|(&id, &n)| quotes[&id].output(id, n * f64::from(recipe.quantity)))
+                .collect();
             let (ready, advice) =
                 crate::professions::access(s, recipe, req, Some(skill), transferable);
             let mut meta = base;
@@ -409,7 +475,7 @@ fn plan(
                 meta,
                 current,
                 sell(false),
-                extra.iter().all(|id| quotes[id].check.is_some()),
+                extra.iter().all(|id| quotes[id].is_checked()),
             ));
         }
         if let Some(path) = sourcing.plan(index) {
@@ -435,7 +501,7 @@ fn plan(
                     direct.clone(),
                     path.inputs.clone(),
                     direct["proceeds"].as_u64(),
-                    extra.iter().all(|id| quotes[id].check.is_some()),
+                    extra.iter().all(|id| quotes[id].is_checked()),
                 );
                 variant["stages"] = json!(path.stages);
                 variant["expected_inputs"] = json!(path.expected);
@@ -477,15 +543,13 @@ fn plan(
                 if path.expected && variant["stock"] == "verified" {
                     variant["stock"] = "estimated".into();
                 }
-                if active {
-                    candidate(
-                        &mut candidates,
-                        recipe.output,
-                        &path.inputs,
-                        direct["proceeds"].as_u64(),
-                        &extra,
-                    );
-                }
+                candidate(
+                    &mut candidates,
+                    recipe.output,
+                    &path.inputs,
+                    direct["proceeds"].as_u64(),
+                    &extra,
+                );
                 chained.push(variant);
             }
             group.extend(chained);
@@ -500,11 +564,42 @@ fn plan(
     candidates.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
     let mut queue = Set::new();
     for (_, _, ids) in candidates {
-        if queue.len() + ids.difference(&queue).count() <= 250 {
+        if ids.iter().all(|id| quotes[id].fresh_price)
+            && queue.len() + ids.difference(&queue).count() <= 250
+        {
             queue.extend(ids)
         }
     }
-    let items:Vec<_>=quotes.into_iter().map(|(id,q)|json!({"id":id,"name":q.name,"estimate":q.estimate,"estimated_auctions":q.count,"checked_price":q.check.map(|p|p.total_buyout as f64/p.units as f64),"checked_at":q.at,"lots":q.check.map(|p| &p.lots),"vendor_buy":q.item.and_then(|i|i.vendor_buy),"listed_units":q.units(),"checked_auctions":q.at.map(|_|q.check.map_or(0,|p|p.auctions)),"vendor_sell":q.item.and_then(|i|i.vendor_sell),"max_stack":q.item.and_then(|i|i.max_stack),"routes":routes.remove(&id).unwrap_or_default()})).collect();
+    let queue_at = queue
+        .iter()
+        .filter_map(|id| quotes[id].latest.map(|q| q.at))
+        .min()
+        .unwrap_or(0);
+    let items: Vec<_> = quotes
+        .into_iter()
+        .map(|(id, q)| {
+            json!({
+                "id": id, "name": q.name,
+                "estimate": q.latest.map(Observation::unit),
+                "estimate_at": q.latest.map(|p| p.at),
+                "estimate_source": q.latest.map(|p| p.source.label()),
+                "estimate_stale": q.latest.is_some() && !q.fresh_price,
+                "estimated_auctions": q.latest.and_then(|p| p.auctions),
+                "broker_price": broker.items.get(&id),
+                "checked_price": q.check.map(|p| p.total_buyout as f64 / p.units as f64),
+                "checked_at": q.at, "listed_units": q.units(),
+                "lots": q.check.map(|p| &p.lots),
+                "checked_auctions": q.at.map(|_| q.check.map_or(0, |p| p.auctions)),
+                "vendor_buy": q.item.and_then(|i| i.vendor_buy),
+                "vendor_sell": q.item.and_then(|i| i.vendor_sell),
+                "max_stack": q.item.and_then(|i| i.max_stack),
+                "routes": routes.remove(&id).unwrap_or_default(),
+            })
+        })
+        .collect();
     let tsm = json!({"source":if desktop{"Desktop AppHelper"}else if est_at>0{"Public DBRecent"}else{"None"},"state":if active{"fresh"}else if est_at>0{"stale"}else{"waiting"},"count":if desktop{obs.estimate_prices.len()}else{feed.items.len()},"observed_at":est_at});
-    json!({"region":region,"market":market,"generated_at":now,"upload_revision":b.map(|b|b.revision),"status":"responsive","tsm":tsm,"items":items,"scan_queue":queue,"shopping_max_age":age.min(900),"queue_estimate_at":if queue.is_empty(){0}else{est_at}})
+    let broker_status = json!({"total":broker.items.len(),
+        "fresh":broker.items.values().filter(|p|fresh(p.observed_at, now, age)).count(),
+        "latest_at":broker.items.values().map(|p|p.observed_at).max()});
+    json!({"region":region,"market":market,"generated_at":now,"upload_revision":b.map(|b|b.revision),"status":"responsive","tsm":tsm,"booty_bay_broker":broker_status,"items":items,"scan_queue":queue,"shopping_max_age":age.min(900),"queue_estimate_at":queue_at})
 }

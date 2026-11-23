@@ -25,7 +25,7 @@ class HostTests(unittest.TestCase):
         self.addCleanup(self.stop)
         self.start()
 
-    def start(self):
+    def start(self, **options):
         env = dict(
             os.environ,
             WOW_BIND="127.0.0.1:0",
@@ -34,7 +34,9 @@ class HostTests(unittest.TestCase):
             WOW_DATA_DIR=self.temp.name,
             WOW_REGION="Forever-US",
             WOW_MARKET="Normal-Alliance",
+            WOW_BROKER_URLS="",
         )
+        env.update(options)
         env.pop("WOW_UPLOAD_TOKEN_FILE", None)
         self.proc = subprocess.Popen(
             [
@@ -155,6 +157,181 @@ class HostTests(unittest.TestCase):
             r["scan_queue"],
         )
 
+    def test_broker_import_and_freshness(self):
+        at = int(time.time()) - 10
+        url = "/api/bootybay/prices"
+        mime = {"Content-Type": "application/json"}
+        page = Path(self.temp.name) / "copper.html"
+        page.write_text(f'''<link rel="canonical" href="https://bootybaybroker.com/forever/item/2840/copper-bar">
+            <table><tr><th>Market</th><th>Lowest buyout</th><th>Last seen</th></tr>
+            <tr><td>US PvE Alliance</td><td>13c</td><td><time datetime="{
+                time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(at))}">Today</time></td></tr></table>''')
+        command = [sys.executable, str(ROOT / "start.py"), "broker", "--html", str(page), "--server", self.url,
+                   "--region", "Forever-US", "--market", "Normal-Alliance"]
+        env = dict(os.environ, WOW_UPLOAD_TOKEN=self.token, WOW_UPLOAD_TOKEN_FILE="")
+        for updated in [1, 0]:
+            output = subprocess.check_output(command, env=env, text=True)
+            self.assertIn(f"{updated} prices updated", output)
+        payload = {"region": "Forever-US", "market": "Normal-Alliance", "items": {
+            "2840": {"price": 15, "observed_at": at-1}, "14047": {"price": 2, "observed_at": at-25000}}}
+        data = json.dumps(payload).encode()
+        self.assertEqual(self.req(url, data, headers=mime)[0], 401)
+        self.assertEqual(json.loads(self.req(url, data, self.token, headers=mime)[1])["updated"], 1)
+        payload["items"]["2840"]["observed_at"] = at
+        self.assertEqual(self.req(url, json.dumps(payload).encode(), self.token, headers=mime)[0], 409)
+        payload["market"] = "PvP-Horde"
+        self.assertEqual(self.req(url, json.dumps(payload).encode(), self.token, headers=mime)[0], 422)
+        self.stop()
+        self.start()
+        report = json.loads(self.req("/api/report")[1])
+        items = {i["id"]: i for i in report["items"]}
+        self.assertEqual(report["booty_bay_broker"]["fresh"], 1)
+        self.assertIsNone(report["upload_revision"])
+        self.assertEqual(items[2840]["estimate"], 13)
+        self.assertEqual(items[2840]["estimate_source"], "Booty Bay Broker")
+        self.assertEqual(items[2840]["estimate_at"], at)
+        self.assertIsNone(items[2840]["listed_units"])
+        self.assertIsNone(items[2840]["lots"])
+        self.assertEqual(items[14047]["estimate"], 2)
+        self.assertTrue(items[14047]["estimate_stale"])
+        route = next(r for r in items[2851]["routes"] if r.get("recipe_id")=="2661" and r["kind"]=="craft")
+        self.assertEqual(next(l["unit_cost"] for l in route["inputs"] if l["id"]==2840), 13)
+
+        # Newer TSM estimates supersede the import. In-game stock stays independent.
+        bundle = {"region": "Forever-US", "market": "Normal-Alliance", "version": 1, "revision": 1,
+                  "snapshot": {"estimate_at": at+1, "estimate_prices": {
+                      "2840": {"total_buyout": 7, "units": 1, "auctions": 9, "observed_at": at+1}}},
+                  "targeted": [{"captured_at": at, "listed_units": {"2840": 0}, "prices": {}}]}
+        code, _, _ = self.req("/api/scans", gzip.compress(json.dumps(bundle).encode()), self.token,
+                              headers={"Content-Type": "application/gzip"})
+        self.assertEqual(code, 202)
+        copper = next(i for i in json.loads(self.req("/api/report")[1])["items"] if i["id"]==2840)
+        self.assertEqual((copper["estimate"], copper["estimate_source"], copper["listed_units"]), (7, "Desktop AppHelper", 0))
+        self.assertEqual(copper["broker_price"]["price"], 13)
+
+    def test_complete_scan_prices_each_reagent_and_keeps_last_sale_price_after_restart(self):
+        at = int(time.time()) - 100
+        scope = dict(region="Forever-US", market="Normal-Alliance")
+        ore, linen, dust, bar, thread, belt = range(800001, 800007)
+
+        def price(value, timestamp, units=1):
+            return dict(total_buyout=value, units=units, auctions=1, observed_at=timestamp)
+
+        def upload(revision, snapshot, targeted=()):
+            bundle = dict(scope, version=1, revision=revision, snapshot=snapshot, targeted=targeted)
+            response = self.req("/api/scans", gzip.compress(json.dumps(bundle).encode()), self.token,
+                                headers={"Content-Type": "application/gzip"})
+            self.assertEqual(response[0], 202, response[1])
+            return json.loads(response[1])["status"]
+
+        upload(1, dict(newest_price_at=at, prices={linen: price(9, at, 2), bar: price(30, at)}))
+        broker = dict(scope, items={dust: dict(price=8, observed_at=at-25000),
+                                   ore: dict(price=11, observed_at=at+15),
+                                   thread: dict(price=91, observed_at=at+13)})
+        self.assertEqual(self.req("/api/bootybay/prices", json.dumps(broker).encode(), self.token,
+                                  headers={"Content-Type": "application/json"})[0], 202)
+        # The full scan observes only ore. An item search for thread is stored in an older group.
+        scan = dict(newest_price_at=at+10, prices={ore: price(20, at+10, 4)},
+                    estimate_at=at+5, estimate_prices={bar: price(2, at+5)},
+                    items={belt: dict(name="Belt", vendor_sell=100, binding="Unbound")},
+                    recipes=[dict(id="mixed-belt", name="Belt", output=belt, quantity=1,
+                                  mats=[[ore, 1], [linen, 2], [dust, 1], [bar, 1], [thread, 1]])])
+        checks = [dict(captured_at=at+12, prices={thread: price(6, at+12)}, listed_units={thread: 1},
+                       checked_at={thread: at+14})]
+        self.assertEqual(upload(2, scan, checks), "accepted")
+        self.stop()
+        self.start()
+        self.assertEqual(upload(2, scan, checks), "unchanged")
+        items = {i["id"]: i for i in json.loads(self.req("/api/report")[1])["items"]}
+        for item_id, amount, source, observed, units in [
+            (ore, 11, "Booty Bay Broker", at+15, 4),
+            (linen, 4.5, "In-game full scan", at, 0),
+            (dust, 8, "Booty Bay Broker", at-25000, 0),
+            (bar, 2, "Desktop AppHelper", at+5, 0),
+            (thread, 6, "In-game item check", at+14, 1),
+        ]:
+            i = items[item_id]
+            self.assertEqual((i["estimate"], i["estimate_source"], i["estimate_at"], i["listed_units"]),
+                             (amount, source, observed, units))
+        self.assertEqual(items[ore]["checked_price"], 5)
+        self.assertEqual(items[thread]["checked_at"], at+14)
+        self.assertTrue(items[dust]["estimate_stale"])
+        self.assertIsNone(items[linen]["lots"])
+        craft = next(r for r in items[belt]["routes"] if r["kind"] == "craft")
+        self.assertEqual((craft["cost"], craft["profit"], craft["stock"]), (36, 64, "insufficient"))
+
+    def test_server_fetches_without_client_then_client_uploads_real_lots(self):
+        from unittest.mock import patch
+
+        self.stop()
+        url = "https://bootybaybroker.com/forever/item/2840/copper-bar"
+        # Substitute only the external HTTPS transport. The worker launches the real
+        # importer and parses the item page using the server's market configuration.
+        helper = Path(self.temp.name) / "broker_fixture.py"
+        helper.write_text(f'''import io, os, sys
+from email.message import Message
+from unittest.mock import patch
+sys.path.insert(0, {str(ROOT / "client")!r})
+import broker
+assert "WOW_UPLOAD_TOKEN" not in os.environ and "WOW_UPLOAD_TOKEN_FILE" not in os.environ
+def open_page(req, timeout):
+    assert req.full_url in ({url + "?region=us"!r}, "https://bootybaybroker.com/forever/item/14341/rune-thread?region=us")
+    response = io.BytesIO(b"""<table><tr><th>Market</th><th>Lowest buyout</th><th>Last seen</th></tr>
+    <tr><td>US PvE Alliance</td><td>13c</td><td><time datetime="{time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}">now</time></td></tr></table>""")
+    response.headers = Message()
+    response.headers["Content-Type"] = "text/html"
+    return response
+with patch.object(broker, "build_opener") as opener:
+    opener.return_value.open.side_effect = open_page
+    broker.main()
+''')
+        self.start(WOW_BROKER_URLS=url, WOW_BROKER_PYTHON=sys.executable, WOW_BROKER_HELPER=str(helper))
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            status = json.loads(self.req("/api/status")[1])
+            if status["booty_bay_broker"]["last_pull_at"]:
+                break
+            time.sleep(.05)
+        self.assertEqual(status["booty_bay_broker"]["fresh"], 1, status["booty_bay_broker"])
+        self.assertIsNone(status["upload_revision"])
+
+        game = Path(self.temp.name) / "_forever_"
+        saved = game / "WTF/Account/Test/SavedVariables/WowAuctionSync.lua"
+        saved.parent.mkdir(parents=True)
+        saved.write_text('WowAuctionSyncDB={version=1,markets={["Normal-Alliance"]={region="Forever-US",'
+                         'capturedAt=%d,complete=true,items={[2840]={quantity=4,totalBuyout=28,auctions=2,'
+                         'lots={[2]={[14]=2}}}}}}}' % int(time.time()))
+        book = game / "Interface/AddOns/TradeSkillMaster_AppHelper/AppData.lua"
+        book.parent.mkdir(parents=True)
+        book.write_bytes(b"\xff")  # An unusable optional price book cannot block the scan.
+        command = [sys.executable, str(ROOT / "start.py"), "client", "--once", "--server", self.url,
+                   "--wow-dir", str(game)]
+        with patch.dict(os.environ, WOW_UPLOAD_TOKEN=self.token, WOW_UPLOAD_TOKEN_FILE="",
+                        WOW_REGION="Forever-US", WOW_MARKET="Normal-Alliance"):
+            output = subprocess.check_output(command, text=True)
+        self.assertIn("full-scan items 1", output)
+        report = json.loads(self.req("/api/report")[1])
+        copper = next(i for i in report["items"] if i["id"] == 2840)
+        self.assertEqual((copper["broker_price"]["price"], copper["checked_price"], copper["listed_units"]), (13, 7, 4))
+        self.assertEqual(copper["lots"], [[2, 14, 2]])
+
+        # Reuse the same transport with no item URLs, and observe the first result
+        # before the rest of the catalog has been fetched.
+        self.stop()
+        self.start(WOW_BROKER_URLS="auto", WOW_BROKER_DELAY_SECONDS="60",
+                   WOW_BROKER_PYTHON=sys.executable, WOW_BROKER_HELPER=str(helper))
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            broker_status = json.loads(self.req("/api/status")[1])["booty_bay_broker"]
+            if broker_status["total"] > 1 or broker_status["pull_error"]:
+                break
+            time.sleep(.05)
+        self.assertGreater(broker_status["configured_items"], 2000)
+        self.assertEqual(broker_status["total"], 2, broker_status)
+        report = json.loads(self.req("/api/report")[1])
+        thread = next(i for i in report["items"] if i["id"] == 14341)
+        self.assertEqual(thread["broker_price"]["price"], 13)
+
     def test_gaming_pc_apphelper_updates_server(self):
         with tempfile.TemporaryDirectory() as installation:
             game = Path(installation)
@@ -171,6 +348,7 @@ class HostTests(unittest.TestCase):
                 sys.executable,
                 str(ROOT / "start.py"),
                 "client",
+                "--include-tsm",
                 "--once",
                 "--server",
                 self.url,

@@ -52,6 +52,11 @@ const items = Array.from({ length: 43 }, (_, n) => ({
   listed_units: n ? null : 4,
   routes: n ? [] : [route],
 }));
+Object.assign(items[0], {
+  estimate_source: "Booty Bay Broker",
+  estimate_at: at + 1,
+  broker_price: { price: 7, observed_at: at + 1 },
+});
 items[5].routes = [
   {
     ...route,
@@ -122,6 +127,7 @@ w.fetch = async () => {
       region: "Forever-US",
       market: "Normal-Alliance",
       tsm: { count: 43, source: "Desktop AppHelper", observed_at: at },
+      booty_bay_broker: {total: 2, fresh: 1, latest_at: at - 60},
       items,
     }),
   };
@@ -180,25 +186,26 @@ async function runSimulation() {
   assert.equal(d.querySelector("#batchSizeLabel").hidden, true);
   assert.equal(d.querySelector("#profitabilityLabel").hidden, true);
   assert.equal(d.querySelectorAll("#body>tr").length, 40);
+  assert.equal(d.querySelector("#broker-stats").hidden, false);
+  assert.equal(d.querySelector("#broker-count").textContent, "1 of 2 fresh");
   d.querySelector(".rowname").click();
+  assert.match(d.querySelector("#body").textContent, /Booty Bay Broker lowest buyout 7c/);
   d.querySelector("[data-sim-item]").click();
   assert.equal(d.querySelector("#sim-gold").disabled, true);
   assert.equal(d.querySelector("#sim-yield-min").disabled, true);
-  assert.match(d.querySelector("#sim-inputs").textContent, /5.5cIn-game scan/);
+  assert.match(d.querySelector("#sim-inputs").textContent, /7cBooty Bay Broker/);
   d.querySelector("#sim-volatility").value = 0;
-  assert.match(await runSimulation(), /Median unit price5.5c/);
+  assert.match(await runSimulation(), /Median unit price7c/);
   d.querySelector("#sim-close").click();
-  // A checked-empty reagent can have a TSM estimate but no actionable quote.
+  // A checked-empty reagent keeps its older price for planning and simulation.
   const reagent = items[1];
   reagent.listed_units = 0;
   reagent.checked_at = at;
+  reagent.estimate_at = at - 86400;
+  reagent.estimate_source = "Desktop AppHelper";
+  reagent.estimate_stale = true;
   d.querySelector('[data-row="1"]').click();
-  assert.match(
-    d.querySelector("#body").textContent,
-    /current auction quote is needed/,
-  );
-  reagent.listed_units = null;
-  reagent.checked_at = null;
+  assert.match(d.querySelector("#body").textContent, /Desktop AppHelper · 1d · Stale/);
   d.querySelector("#refresh").click();
   await wait();
   d.querySelector('[data-sim-item="1"]').click();
@@ -211,7 +218,7 @@ async function runSimulation() {
   assert.equal(d.querySelectorAll("#body>tr").length, 3);
   w.location.hash = "#professions";
   await wait();
-  assert.equal(d.querySelector("#pricing").value, "listings");
+  assert.equal(d.querySelector("#pricing").value, "estimates");
   const planning = d.querySelector("#pricing");
   planning.value = "estimates";
   planning.dispatchEvent(new w.Event("input"));
