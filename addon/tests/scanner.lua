@@ -29,13 +29,13 @@ function CreateFrame(kind)
 end
 Enum={GameRule={}}
 C_Map={GetBestMapForUnit=function()return 84 end}
-C_Item={GetItemInfo=function(id)return "Item "..id,nil,2,10,nil,nil,nil,20,"",nil,50,7 end}
+C_Item={GetItemInfo=function(id)return "Item "..id,nil,2,10,nil,nil,nil,20,"",nil,id==2002 and 100 or 50,7 end}
 SlashCmdList={}
 local query,pages
 C_AuctionHouse={
     GetNumReplicateItems=function()return rows end,ReplicateItems=function()end,
     GetReplicateItemInfo=function(n)
-        return "Ore",nil,2,nil,nil,nil,nil,nil,nil,n==1 and 0 or 11,nil,nil,nil,nil,nil,nil,1001,ready
+        return nil,nil,ready and 2 or nil,nil,nil,nil,nil,nil,nil,n==1 and 0 or 11,nil,nil,nil,nil,nil,nil,1001,n==1 and ready
     end,
     GetReplicateItemLink=function(n)return n==2 and "item:1001:0:0:0:0:0:12" or "item:1001" end,
     MakeItemKey=function(id,level)return {itemID=id,itemLevel=level} end,
@@ -51,6 +51,8 @@ C_AuctionHouse={
 }
 assert(loadfile("addon/WowAuctionSync/Scanner.lua"))("WowAuctionSync",W)
 assert(loadfile("addon/WowAuctionSync/Recipes.lua"))("WowAuctionSync",W)
+assert(loadfile("addon/WowAuctionSync/Opportunities.lua"))("WowAuctionSync",W)
+W.catalog={items={},recipes={},bands={}}
 local cmd=SlashCmdList.WOWAUCTIONSYNC
 local function event(e,arg)scripts.OnEvent(nil,e,arg)end
 local function tick()scripts.OnUpdate()end
@@ -85,7 +87,7 @@ cmd("scan");throttle=false;elapse(10);assert(not query);lastSays("0/3 items · 0
 throttle=true;tick()
 assert(query.itemID==1001);event("COMMODITY_SEARCH_RESULTS_UPDATED",9999);tick()
 assert(not pages);event("COMMODITY_SEARCH_RESULTS_UPDATED",1001);tick();tick()
-assert(pages==1);fullPage=true;event("COMMODITY_SEARCH_RESULTS_UPDATED",1001);tick();tick()
+assert(pages==1);fullPage=true;event("COMMODITY_SEARCH_RESULTS_ADDED",1001);tick();tick()
 assert(query.itemID==1002);elapse(10);lastSays("1/3 items · 0:20");lastSays("Waiting for auction results · item #1002")
 event("COMMODITY_SEARCH_RESULTS_UPDATED",1002);tick();tick()
 event("ITEM_SEARCH_RESULTS_UPDATED",query);tick()
@@ -101,7 +103,7 @@ lastSays("Window closed")
 event("AUCTION_HOUSE_SHOW");cmd("scan");tick();clock=250;tick()
 assert(WowAuctionSyncDB.targeted[market]==record)
 lastSays("Queue expired")
-cmd("full");elapse(91);lastSays("Scan timed out")
+cmd("full");elapse(91);lastSays("Bulk snapshot timed out")
 local previous=db.markets[market]
 rows=501;cmd("full");event("REPLICATE_ITEM_LIST_UPDATE");elapse(10)
 lastSays("250/501 listings");assert(bar.value==250 and bar.maximum==501)
@@ -117,6 +119,44 @@ tick();local observed=time();elapse(2);event("COMMODITY_SEARCH_RESULTS_UPDATED",
 local refreshed=db.targeted[market]
 assert(refreshed.checked[1001] and not refreshed.items[1001] and refreshed.checkedAt[1001]==observed)
 assert(refreshed.checkedAt[1003]==previousAt and refreshed.items[1003].totalBuyout==15)
+
+-- A full scan alone must price an off-page, unlearned recipe when its reagent
+-- only appears in commodity search. Results reach the planner before the queue ends.
+local cat={items={[2001]={name="Cloth"},[2002]={name="Robe",sell=100,trade=true},
+        [2003]={name="Dust"},[2004]={name="Shard"}},
+    recipes={{id="robe",name="Robe",profession="Tailoring",output=2002,mats={{2001,2}},quantity=1}},
+    bands={{[2003]=1,[2004]=1}}}
+W.catalog=cat
+local changes=0
+W.quotesChanged=function() changes=changes+1 end
+C_AuctionHouse.GetNumCommoditySearchResults=function(id)return id==2001 and 1 or 0 end
+rows=1;cmd("full");event("REPLICATE_ITEM_LIST_UPDATE");tick();tick()
+lastSays("Checking route prices");assert(query.itemID==2001)
+local scan=db.markets[market]
+assert(scan.complete and scan.items[1001] and not scan.items[2001])
+local function robeProfit()
+    local result=W.evaluateOpportunities(cat,W.profile(),db,"Forever-US",market,1,time(),function()end)
+    for _,route in ipairs(result.rows) do if route.key=="r/robe/Craft → vendor" then return route.profit end end
+end
+assert(not robeProfit())
+event("COMMODITY_SEARCH_RESULTS_UPDATED",2001);tick();elapse(10)
+assert(robeProfit()==90 and W.scanBusy() and changes>=2)
+assert(W.startScan("scan",{2004,2002}));lastSays("Prioritized")
+assert(query.itemID==2002)
+event("COMMODITY_SEARCH_RESULTS_UPDATED",2002);tick();tick();assert(query.itemID==2004)
+elapse(91);tick();assert(query.itemID==2003) -- A timeout is not evidence of a sellout.
+event("COMMODITY_SEARCH_RESULTS_UPDATED",2003);tick()
+assert(not W.scanBusy())
+lastSays("1 skipped");lastSays("Scan complete")
+assert(db.targeted[market].checked[2003] and not db.targeted[market].checked[2004])
+assert(robeProfit()==90)
+
+-- A throttled snapshot switches to targeted checks and keeps the last complete market.
+cmd("full");elapse(91);tick()
+assert(W.scanBusy() and query.itemID==2004 and db.markets[market]==scan)
+event("AUCTION_HOUSE_CLOSED");lastSays("Completed item checks kept")
+assert(not W.scanBusy() and robeProfit()==90)
+event("AUCTION_HOUSE_SHOW")
 C_TradeSkillUI={
  GetBaseProfessionInfo=function()return {professionName="Blacksmithing",skillLevel=80}end,
  GetAllRecipeIDs=function()return {7,8}end,

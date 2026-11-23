@@ -2,7 +2,7 @@ local _, W = ...
 local panel, hint, pageLabel, details, search, profitButton, followButton
 local rowButtons, filtered = {}, {}
 local batch, page, onlyProfit, minProfit = 1, 1, false, 1
-local job, result, selectedKey, selected, following, nextCheck, lastTick
+local job, result, selectedKey, selected, following, nextCheck, lastTick, pendingPrices
 local PAGE = 8
 local function copper(value)
     if not value then return "Unknown" end
@@ -90,18 +90,20 @@ local function repaint()
     filtered={}
     local query=search:GetText():lower()
     selected=nil
+    local priced=0
     for _,r in ipairs(result.rows) do
         local text=r.name.." "..r.item.." "..r.kind.." "..(r.profession or "")..(#r.steps>0 and " chained" or "")
         if following and r.key==selectedKey then selected=r end
         if (not onlyProfit or (r.profit and r.profit>0)) and text:lower():find(query,1,true) then
             filtered[#filtered+1]=r
+            if r.profit~=nil then priced=priced+1 end
             if r.key==selectedKey then selected=r end
         end
     end
     if not selected and not following then selectedKey=nil end
     local pages=math.max(1,math.ceil(#filtered/PAGE))
     page=math.max(1,math.min(page,pages))
-    pageLabel:SetText(("%d / %d   ·   %d routes"):format(page,pages,#filtered))
+    pageLabel:SetText(("%d / %d   ·   %d of %d routes priced"):format(page,pages,priced,#filtered))
     for n,button in ipairs(rowButtons) do
         local r=filtered[(page-1)*PAGE+n]
         button.route=r
@@ -112,13 +114,16 @@ local function repaint()
     end
     describe()
 end
-local function rebuild()
+local function rebuild(keepRows)
     if not panel or not panel:IsShown() then return end
     local profile,region,market=W.profile()
     if not profile then return end
-    result,selected=nil,nil
-    for _,b in ipairs(rowButtons) do b.route=nil;b:Hide() end
-    details:SetText("");pageLabel:SetText("")
+    pendingPrices=false
+    if not keepRows then
+        result,selected=nil,nil
+        for _,b in ipairs(rowButtons) do b.route=nil;b:Hide() end
+        details:SetText("");pageLabel:SetText("")
+    end
     hint:SetText("Pricing routes from your in-game scans…")
     job=coroutine.create(function()
         local count=0
@@ -129,7 +134,9 @@ local function rebuild()
         return W.evaluateOpportunities(W.catalog,profile,WowAuctionSyncDB,region,market,batch,time(),pulse)
     end)
 end
-W.quotesChanged=rebuild
+function W.quotesChanged()
+    if job then pendingPrices=true else rebuild(true) end
+end
 function W.stopFollowing()
     following=false
     if followButton then followButton:SetText("Follow: off") end
@@ -146,7 +153,9 @@ local function tick()
             if not ok then job=nil;hint:SetText("Pricing failed: "..tostring(value));return end
             if coroutine.status(job)=="dead" then
                 result,job=value,nil
+                lastTick=nil
                 repaint()
+                if pendingPrices then rebuild(true) end
                 break
             end
             if start and debugprofilestop()-start>=4 then break end
@@ -154,7 +163,7 @@ local function tick()
     end
     if not result or lastTick==time() then return end
     lastTick=time()
-    if result and time()>=result.expiry then rebuild();return end
+    if not job and time()>=result.expiry then rebuild(true);return end
     if result then
         local text="Current listings · maximum age 15m"
         if result.fullAt then text="Full scan "..age(result.fullAt).."  ·  price limit 15m" end
@@ -262,9 +271,13 @@ function W.openOpportunities()
     panel:Show();rebuild()
     local region,market=W.scope()
     local full=WowAuctionSyncDB and WowAuctionSyncDB.markets[market]
-    if W.auctionOpen() and not W.scanBusy() and
-        (not full or full.region~=region or not full.complete or time()-full.capturedAt>W.quoteAge) then
-        W.startScan("full")
+    if W.auctionOpen() and not W.scanBusy() then
+        if not full or full.region~=region or not full.complete or time()-full.capturedAt>W.quoteAge then
+            W.startScan("full")
+        else
+            local ids=W.missingOpportunityItems(W.profile(),WowAuctionSyncDB,region,market,time())
+            if #ids>0 then W.startScan("routes",ids) end
+        end
     end
 end
 

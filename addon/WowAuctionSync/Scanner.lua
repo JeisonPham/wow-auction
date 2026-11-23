@@ -32,7 +32,7 @@ local phases = {
 }
 local function showStatus(now, outcome, complete)
     local full = job.mode == "full"
-    local title = full and "Full scan" or "Targeted scan"
+    local title = full and "Full scan" or (job.mode=="routes" and "Checking route prices" or "Targeted scan")
     local done, total
     if full then
         done, total = job.row or 0, job.rows
@@ -41,6 +41,7 @@ local function showStatus(now, outcome, complete)
     end
     if total then
         title = title .. (" · %d/%d %s"):format(done, total, full and "listings" or "items")
+        if job.skipped and job.skipped>0 then title=title..(" · %d skipped"):format(job.skipped) end
     end
     local elapsed = math.floor(now - job.started)
     title = title .. (" · %d:%02d"):format(math.floor(elapsed / 60), elapsed % 60)
@@ -140,7 +141,29 @@ local function add(items,id,qty,total,unitPrice)
     r.lots[size]=prices
     items[id]=r
 end
+-- Apply only completed searches. Missing items in a completed search are real sellouts.
+local function publishChecks()
+    if not next(job.checkedAt) then return end
+    local records = WowAuctionSyncDB.targeted
+    local rec = records[job.market]
+    if not rec or not rec.complete or rec.region~=job.region then
+        rec={region=job.region,complete=true,capturedAt=job.scanTime,items={},checked={},checkedAt={}}
+        records[job.market]=rec
+    elseif not rec.checkedAt then
+        rec.checkedAt={}
+        for id in pairs(rec.checked) do rec.checkedAt[id]=rec.capturedAt end
+    end
+    for id,at in pairs(job.checkedAt) do
+        if at >= (rec.checkedAt[id] or 0) then
+            rec.items[id],rec.checked[id],rec.checkedAt[id]=job.items[id],true,at
+            rec.capturedAt=math.max(rec.capturedAt,at)
+        end
+    end
+    job.items,job.checkedAt={},{}
+    if W.quotesChanged then W.quotesChanged() end
+end
 local function stop(text, complete)
+    if job.mode=="routes" then publishChecks() end
     local now = GetTime()
     lastStatus = showStatus(now, text, complete)
     job = nil
@@ -150,28 +173,27 @@ end
 function W.auctionOpen() return opened and capital() end
 function W.scanBusy() return job ~= nil end
 local function commit()
-    local db=WowAuctionSyncDB
-    local rec={region=job.region,capturedAt=job.scanTime,items=job.items,complete=true}
-    if job.mode=="full" then db.markets[job.market]=rec
-    else
-        rec.checked, rec.checkedAt = job.checked, job.checkedAt
-        local previous = db.targeted[job.market]
-        if previous and previous.complete and previous.region == job.region then
-            for id in pairs(previous.checked) do
-                if not rec.checked[id] then
-                    rec.checked[id] = true
-                    rec.checkedAt[id] = (previous.checkedAt and previous.checkedAt[id]) or previous.capturedAt
-                    rec.items[id] = previous.items[id]
-                end
-            end
-        end
-        db.targeted[job.market] = rec
-    end
+    publishChecks()
     stop("Scan complete. Type /reload to save.", true)
-    if W.quotesChanged then W.quotesChanged() end
+end
+local function finishSnapshot(complete)
+    local db=WowAuctionSyncDB
+    if complete then
+        db.markets[job.market]={region=job.region,capturedAt=job.scanTime,items=job.items,complete=true}
+        if W.quotesChanged then W.quotesChanged() end
+    end
+    local ids=W.missingOpportunityItems(job.profile,db,job.region,job.market,time())
+    local message=complete and "Bulk listings read." or "Bulk snapshot timed out. Previous full scan retained."
+    if #ids>0 then
+        stop(message.." Starting individual route checks.",complete)
+        W.startScan("routes",ids)
+    else
+        stop(message.." Scan complete. Type /reload to save.",complete)
+    end
 end
 local function advance()
     job.waitReason=nil
+    job.morePages=false
     job.index=job.index+1; job.phase="search";job.deadline=GetTime()+90
     if not job.ids[job.index] then commit() end
 end
@@ -179,9 +201,10 @@ local function readFull()
     job.waitReason=nil
     local finish=math.min(job.row+250,job.rows)
     while job.row<finish do
-        local name,_,qty,_,_,_,_,_,_,buy,_,_,_,_,_,_,id,ready=AH.GetReplicateItemInfo(job.row)
-        if not id or ready==false or not qty or not name then
+        local _,_,qty,_,_,_,_,_,_,buy,_,_,_,_,_,_,id,ready=AH.GetReplicateItemInfo(job.row)
+        if not id or not qty or qty<=0 or ((not buy or buy<=0) and ready==false) then
             job.waitReason="Waiting for listing data"
+            if id then W.cache(id) end
             return
         end
         if buy and buy>0 then
@@ -198,10 +221,10 @@ local function readFull()
         end
         job.row=job.row+1;job.deadline=GetTime()+90
     end
-    if job.row==job.rows then commit() end
+    if job.row==job.rows then finishSnapshot(true) end
 end
 local function sameKey(a,b)
-    return a and b and a.itemID==b.itemID and (a.itemSuffix or 0)==(b.itemSuffix or 0)
+    return type(a)=="table" and b and a.itemID==b.itemID and (a.itemSuffix or 0)==(b.itemSuffix or 0)
         and (a.itemLevel or 0)==(b.itemLevel or 0) and (a.battlePetSpeciesID or 0)==(b.battlePetSpeciesID or 0)
 end
 local function targetResults()
@@ -227,7 +250,7 @@ local function targetResults()
             end
         end
     end
-    job.items[id]=rows[id];job.checked[id]=true;job.checkedAt[id]=job.queryAt;W.cache(id);advance()
+    job.items[id]=rows[id];job.checkedAt[id]=job.queryAt;W.cache(id);advance()
 end
 local function stepScan()
     if job.phase=="fullRows" then readFull()
@@ -246,9 +269,11 @@ local function stepScan()
         local key=AH.MakeItemKey(id,gear and level or 0,0,0)
         job.key=key;job.queryAt=time();job.phase="waiting";AH.SendSearchQuery(key,{},false)
     elseif job.phase=="page" and AH.IsThrottledMessageSystemReady() then
-        job.phase="waiting"
-        if job.commodity then AH.RequestMoreCommoditySearchResults(job.ids[job.index])
-        else AH.RequestMoreItemSearchResults(job.key) end
+        job.phase="waiting";job.morePages=true
+        local complete
+        if job.commodity then complete=AH.RequestMoreCommoditySearchResults(job.ids[job.index])
+        else complete=AH.RequestMoreItemSearchResults(job.key) end
+        if complete then job.phase="results" end
     end
 end
 frame:SetScript("OnUpdate",function()
@@ -262,8 +287,11 @@ frame:SetScript("OnUpdate",function()
     local now = GetTime()
     if job.expires and time()>job.expires then stop("Queue expired. Scan discarded.");return end
     if now>job.deadline then
-        stop(job.phase=="replicate" and "Scan timed out waiting for a full snapshot. Recheck a route or page in Opportunities."
-            or "Scan timed out. Previous observations retained.")
+        if job.mode=="full" then finishSnapshot(false)
+        elseif job.mode=="routes" then
+            job.skipped=job.skipped+1
+            advance()
+        else stop("Scan timed out. Previous observations retained.") end
         return
     end
     stepScan()
@@ -271,33 +299,61 @@ frame:SetScript("OnUpdate",function()
         local text = showStatus(now)
         job.nextRefresh = now + 1
         if now >= job.nextReport then
+            if job.mode=="routes" then publishChecks() end
             say(text)
             job.nextReport = now + REPORT_INTERVAL
         end
     end
 end)
-frame:SetScript("OnEvent",function(_,event,arg)
+frame:SetScript("OnEvent",function(_,event,arg,success)
     if event=="ADDON_LOADED" and arg==addonName then database()
-    elseif event=="GET_ITEM_INFO_RECEIVED" and pendingInfo[arg] then W.cache(arg)
+    elseif event=="GET_ITEM_INFO_RECEIVED" and pendingInfo[arg] then
+        if success==false then
+            pendingInfo[arg]=nil
+            if job and job.mode=="routes" and job.phase=="search" and job.ids[job.index]==arg then
+                job.skipped=job.skipped+1
+                advance()
+            end
+        else W.cache(arg) end
     elseif event=="AUCTION_HOUSE_SHOW" then opened=true;if W.attachOpportunities then W.attachOpportunities() end
-    elseif event=="AUCTION_HOUSE_CLOSED" then opened=false;if job then stop("Window closed. Scan discarded.") end
+    elseif event=="AUCTION_HOUSE_CLOSED" then opened=false;if job then
+        stop(job.mode=="routes" and "Window closed. Completed item checks kept." or "Window closed. Scan discarded.") end
         if W.stopFollowing then W.stopFollowing() end
     elseif job and job.mode=="full" and event=="REPLICATE_ITEM_LIST_UPDATE" and job.phase=="replicate" then
-        job.row=0;job.rows=AH.GetNumReplicateItems();job.phase="fullRows"
-    elseif job and job.mode=="scan" and job.phase=="waiting" then
-        if event=="COMMODITY_SEARCH_RESULTS_UPDATED" and arg==job.ids[job.index] then job.commodity=true;job.phase="results"
-        elseif event=="ITEM_SEARCH_RESULTS_UPDATED" and sameKey(arg,job.key) then job.commodity=false;job.phase="results" end
+        job.row=0;job.rows=AH.GetNumReplicateItems();job.phase="fullRows";job.deadline=GetTime()+90
+    elseif job and job.mode~="full" and job.phase=="waiting" then
+        if (event=="COMMODITY_SEARCH_RESULTS_UPDATED" or (event=="COMMODITY_SEARCH_RESULTS_ADDED" and job.morePages))
+            and arg==job.ids[job.index] then job.commodity=true;job.phase="results"
+        elseif (event=="ITEM_SEARCH_RESULTS_UPDATED" and sameKey(arg,job.key)) or
+            (event=="ITEM_SEARCH_RESULTS_ADDED" and job.morePages and not job.commodity and
+            (sameKey(arg,job.key) or arg==job.ids[job.index])) then job.commodity=false;job.phase="results" end
     end
 end)
-for _,event in ipairs({"ADDON_LOADED","GET_ITEM_INFO_RECEIVED","AUCTION_HOUSE_SHOW","AUCTION_HOUSE_CLOSED","REPLICATE_ITEM_LIST_UPDATE","COMMODITY_SEARCH_RESULTS_UPDATED","ITEM_SEARCH_RESULTS_UPDATED"}) do frame:RegisterEvent(event) end
+for _,event in ipairs({"ADDON_LOADED","GET_ITEM_INFO_RECEIVED","AUCTION_HOUSE_SHOW","AUCTION_HOUSE_CLOSED",
+    "REPLICATE_ITEM_LIST_UPDATE","COMMODITY_SEARCH_RESULTS_UPDATED","ITEM_SEARCH_RESULTS_UPDATED",
+    "COMMODITY_SEARCH_RESULTS_ADDED","ITEM_SEARCH_RESULTS_ADDED"}) do frame:RegisterEvent(event) end
 function W.startScan(mode, ids)
     local profile,region,market,problem=W.profile()
     if problem then say(problem);return false end
     if mode=="scan" and ids and #ids>0 and job and job.phase=="replicate" then
         stop("Switching from the pending full snapshot to the requested item checks.")
     end
-    if job or not profile or not W.auctionOpen() then
-        say("Open your faction capital auction house and finish any running scan.");return false
+    if mode=="scan" and ids and #ids>0 and job and job.mode=="routes" then
+        local ordered,seen={},{}
+        for i=1,job.index do ordered[i]=job.ids[i] end
+        seen[job.ids[job.index]]=true
+        local function queue(id)
+            if not seen[id] then ordered[#ordered+1]=id;seen[id]=true end
+        end
+        for _,id in ipairs(ids) do queue(id) end
+        for i=job.index+1,#job.ids do queue(job.ids[i]) end
+        job.ids=ordered
+        say("Prioritized those items in the running route checks.")
+        return true
+    end
+    if job then say(showStatus(GetTime()));return false end
+    if not profile or not W.auctionOpen() then
+        say("Open your faction capital auction house to scan.");return false
     end
     local expires
     if mode=="scan" and not ids then
@@ -309,7 +365,8 @@ function W.startScan(mode, ids)
     end
     if mode=="scan" and #ids==0 then say("This route has no auction items to recheck.");return false end
     local now=GetTime()
-    job={region=region,market=market,mode=mode,items={},checked={},checkedAt={},deadline=now+90,
+    job={region=region,market=market,profile=profile,mode=mode,items={},checkedAt={},deadline=now+90,
+        skipped=mode=="routes" and 0 or nil,
         started=now,scanTime=time(),nextRefresh=now+1,nextReport=now+REPORT_INTERVAL}
     hideStatusAt=nil
     if mode=="full" then job.phase="replicate"
@@ -331,7 +388,8 @@ SlashCmdList.WOWAUCTIONSYNC=function(cmd)
     end
     if cmd=="cancel" then
         if W.stopFollowing then W.stopFollowing() end
-        if job then stop("Cancelled. Scan discarded.") else say("No scan is running.") end
+        if job then stop(job.mode=="routes" and "Cancelled. Completed item checks kept." or "Cancelled. Scan discarded.")
+        else say("No scan is running.") end
         return
     end
     if cmd=="roster" then if profile then W.roster(profile,true) end;return end

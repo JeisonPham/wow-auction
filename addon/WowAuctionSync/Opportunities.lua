@@ -49,11 +49,78 @@ local function basket(lots, need)
     return costs[need], sizes[need]
 end
 
--- Called in short coroutine slices by the panel. No server estimate is a price source here.
-function W.evaluateOpportunities(cat, profile, db, region, market, batch, now, pulse)
+local function marketBooks(db, region, market)
     local full, target = db.markets[market], db.targeted[market]
     if not (full and full.complete and full.region == region) then full = nil end
     if not (target and target.complete and target.region == region) then target = nil end
+    return full, target
+end
+
+local function observation(full, target, id)
+    local at = full and full.capturedAt or 0
+    if target and target.checked[id] then
+        local t = (target.checkedAt and target.checkedAt[id]) or target.capturedAt
+        if t >= at then return t, target.items[id], true end
+    end
+    return at, full and full.items[id], false
+end
+
+local function fresh(at, now)
+    return at > 0 and at <= now+300 and now-at <= W.quoteAge
+end
+
+function W.missingOpportunityItems(profile, db, region, market, now)
+    local cat, faction = W.catalog, UnitFactionGroup("player")
+    local full, target = marketBooks(db, region, market)
+    local uses, ids = {}, {}
+    local function consider(id)
+        if uses[id] == nil then
+            local at, rec, searched = observation(full, target, id)
+            -- A completed item search can confirm a sellout. A bulk omission may miss a reagent.
+            if fresh(at, now) and ((rec and rec.lots and next(rec.lots)) or (searched and not rec)) then
+                uses[id] = 0
+                return
+            end
+            local item, live = cat.items[id] or {}, profile.itemInfo[id] or {}
+            local binding = live.binding
+            if binding == "Binds when picked up" or binding == "Quest item" or
+                ((not binding or binding == "") and item.bound) then
+                uses[id] = 0
+                return
+            end
+            uses[id] = 1
+            ids[#ids+1] = id
+        elseif uses[id] > 0 then
+            uses[id] = uses[id]+1
+        end
+    end
+    local function recipe(r)
+        if r.faction and r.faction ~= faction then return end
+        for _, mat in ipairs(r.mats) do consider(mat[1]) end
+        consider(r.output)
+    end
+    for _, r in ipairs(cat.recipes) do recipe(r) end
+    for _, char in pairs(profile.characters) do
+        for _, group in pairs(char.recipes or {}) do
+            for _, r in pairs(group) do recipe(r) end
+        end
+    end
+    for _, drops in pairs(cat.bands) do
+        for id in pairs(drops) do consider(id) end
+    end
+    -- Also repair older aggregate-only listings that can produce buy/vendor or buy/DE routes.
+    for id in pairs(full and full.items or {}) do consider(id) end
+    for id in pairs(target and target.items or {}) do
+        local _, _, searched = observation(full, target, id)
+        if searched then consider(id) end
+    end
+    table.sort(ids,function(a,b) return uses[a] > uses[b] or (uses[a] == uses[b] and a < b) end)
+    return ids
+end
+
+-- Called in short coroutine slices by the panel. No server estimate is a price source here.
+function W.evaluateOpportunities(cat, profile, db, region, market, batch, now, pulse)
+    local full, target = marketBooks(db, region, market)
     local book, metadata, earliestExpiry = {}, {}, INF
     local function meta(id)
         if not metadata[id] then
@@ -71,14 +138,9 @@ function W.evaluateOpportunities(cat, profile, db, region, market, batch, now, p
     end
     local function quote(id)
         if book[id] then return book[id] end
-        local at = full and full.capturedAt or 0
-        local rec = full and full.items[id]
-        if target and target.checked[id] then
-            local t = (target.checkedAt and target.checkedAt[id]) or target.capturedAt
-            if t >= at then at, rec = t, target.items[id] end
-        end
+        local at, rec = observation(full, target, id)
         local q = {lots={}, costs={}}
-        if at > 0 and at <= now+300 and now-at <= W.quoteAge then
+        if fresh(at, now) then
             q.at = at
             earliestExpiry = math.min(earliestExpiry, at+W.quoteAge+1)
             for size, levels in pairs(rec and rec.lots or {}) do

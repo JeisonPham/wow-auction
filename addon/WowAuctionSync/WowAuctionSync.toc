@@ -1,7 +1,7 @@
 ## Interface: 16001
 ## Title: WoW Auction Sync
 ## Notes: Find and recheck craft, vendor and disenchant opportunities at the auction house.
-## Version: 0.4.0
+## Version: 0.4.1
 ## SavedVariables: WowAuctionSyncDB
 Queue.lua
 Scanner.lua

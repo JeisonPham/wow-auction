@@ -52,6 +52,17 @@ checked.region="Forever-EU";clock=1000
 assert(find(evaluate(),"r/c/Craft → vendor").profit==38)
 checked.region=region
 WowAuctionSyncDB.targeted={}
+-- An unpriced legacy quote needs a search. A newer confirmed sellout does not.
+W.catalog=cat
+local coverage={markets={[market]={complete=true,region=region,capturedAt=990,items={
+    [1]={quantity=4,totalBuyout=16},[2]=lot(1,35,10),[6]=lot(1,10,4)
+}}},targeted={[market]={complete=true,region=region,capturedAt=999,checkedAt={[3]=998,[4]=989},
+    checked={[3]=true,[4]=true},items={}}}}
+local needed={}
+for _,id in ipairs(W.missingOpportunityItems(profile,coverage,region,market,clock)) do
+    assert(not needed[id]);needed[id]=true
+end
+assert(needed[1] and needed[4] and needed[5] and not needed[2] and not needed[3] and not needed[6])
 -- Minimal UI mock, including edit boxes, route buttons, full refresh and follow lifecycle.
 local widgets={}
 local function noop() end
@@ -82,6 +93,10 @@ W.startScan=function(mode,ids)scans[#scans+1]={mode=mode,ids=ids};return true en
 W.say=noop
 loadAddon("OpportunityPanel")
 W.openOpportunities()
+-- The fresh full scan has lots for every AH item except thread. Opening the
+-- panel queues that missing input independently of its visible page or filter.
+assert(#scans==1 and scans[1].mode=="routes" and #scans[1].ids==1 and scans[1].ids[1]==5)
+scans={}
 local panel=lookup("name","WowAuctionSyncOpportunities")
 local function paint() for i=1,20 do panel.scripts.OnUpdate(panel) end end
 paint()
