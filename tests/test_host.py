@@ -35,6 +35,8 @@ class HostTests(unittest.TestCase):
             WOW_REGION="Forever-US",
             WOW_MARKET="Normal-Alliance",
             WOW_BROKER_URLS="",
+            WOW_BLIZZARD_CLIENT_ID="",
+            WOW_BLIZZARD_CLIENT_SECRET="",
         )
         env.update(options)
         env.pop("WOW_UPLOAD_TOKEN_FILE", None)
@@ -259,6 +261,64 @@ class HostTests(unittest.TestCase):
         self.assertIsNone(items[linen]["lots"])
         craft = next(r for r in items[belt]["routes"] if r["kind"] == "craft")
         self.assertEqual((craft["cost"], craft["profit"], craft["stock"]), (36, 64, "insufficient"))
+
+    def test_blizzard_worker_prices_the_report_and_keeps_cache_after_http_failure(self):
+        self.stop()
+        at = int(time.time()) - 30
+        helper = Path(self.temp.name, "blizzard_fixture.py")
+        helper.write_text(f'''import io, json, os, sys
+from email.utils import formatdate
+from unittest.mock import patch
+from urllib.error import HTTPError
+sys.path.insert(0, {str(ROOT / "client")!r})
+import blizzard
+assert "WOW_UPLOAD_TOKEN" not in os.environ
+def read(req, timeout):
+    if req.full_url == "https://oauth.battle.net/token":
+        if os.environ.get("FIXTURE_DENIED"):
+            raise HTTPError(req.full_url, 401, "error", {{}}, None)
+        data = {{"access_token":"simulated-token"}}
+    elif "/auctions/111/commodities?" in req.full_url:
+        data = {{"auctions":[{{"item":{{"id":2840}},"quantity":20,"unit_price":13}}]}}
+    else:
+        assert "/ruleset/2/auctions/111?" in req.full_url
+        data = {{"id":111,"auctions":[{{"item":{{"id":14047}},"quantity":2,"buyout":15}}]}}
+    reply = io.BytesIO(json.dumps(data).encode())
+    reply.headers = {{"Last-Modified":formatdate({at}, usegmt=True)}}
+    return reply
+with patch.object(blizzard, "build_opener") as opener:
+    opener.return_value.open.side_effect = read
+    sys.exit(blizzard.main())
+''')
+        settings = dict(WOW_BLIZZARD_CLIENT_ID="fixture-id", WOW_BLIZZARD_CLIENT_SECRET="fixture-secret",
+                        WOW_BLIZZARD_PYTHON=sys.executable, WOW_BLIZZARD_HELPER=str(helper))
+        for denied in ("", "1"):
+            self.start(**settings, FIXTURE_DENIED=denied)
+            for _ in range(30):
+                status = json.loads(self.req("/api/status")[1])["blizzard"]
+                if status["last_pull_at"]:
+                    break
+                time.sleep(0.1)
+            self.assertIsNotNone(status["last_pull_at"])
+            self.assertEqual(status["total"], 2, status)
+            self.assertEqual(status["error"], "Blizzard returned HTTP 401" if denied else None)
+            report = json.loads(self.req("/api/report")[1])
+            items = {i["id"]: i for i in report["items"]}
+            self.assertNotIn("fixture-secret", json.dumps(report))
+            for item_id, expected in [(2840, 13), (14047, 7.5)]:
+                i = items[item_id]
+                self.assertEqual((i["estimate"], i["estimate_source"], i["estimate_at"]),
+                                 (expected, "Blizzard Auction House", at))
+                self.assertIsNone(i["lots"])
+            if denied:
+                bundle = dict(region="Forever-US", market="Normal-Alliance", revision=1, version=1,
+                              snapshot=dict(newest_price_at=at+1, prices={"2840":dict(
+                                  total_buyout=30, units=2, auctions=1, observed_at=at+1)}))
+                self.assertEqual(self.req("/api/scans", gzip.compress(json.dumps(bundle).encode()), self.token,
+                                          headers={"Content-Type":"application/gzip"})[0], 202)
+                copper = next(i for i in json.loads(self.req("/api/report")[1])["items"] if i["id"] == 2840)
+                self.assertEqual((copper["estimate"], copper["estimate_source"]), (15, "In-game full scan"))
+            self.stop()
 
     def test_server_fetches_without_client_then_client_uploads_real_lots(self):
         from unittest.mock import patch

@@ -53,9 +53,24 @@ For a host that gave you an exact endpoint, use `--upload-url "https://auction.e
 
 **During play**, use **Recheck route** before buying or **Follow** to recheck the selected route about once a minute while the panel and auction house stay open. Type `/reload` after a completed recheck when you want the web dashboard to receive it. [In-game opportunity controls](#find-opportunities-at-the-auction-house)
 
+### Connect the Blizzard Auction House API
+
+1. Sign in to Battle.net, choose **Create New Client**, and enter a client name and intended use. Open **Manage Client** to copy the **Client ID** and **Client Secret**. The scanner uses the server-to-server client credentials flow. [Battle.net Developer Portal – API Access](https://develop.battle.net/access/clients)
+2. On the **server**, run `python3 start.py --init-only` in the project folder. This adds the two fields to the private `.env` beside `start.py`, including on existing installations. Fill them in with your own values. Leaving both blank disables Blizzard pulls.
+
+   ```dotenv
+   WOW_BLIZZARD_CLIENT_ID=your_client_id
+   WOW_BLIZZARD_CLIENT_SECRET=your_client_secret
+   ```
+
+3. Run `docker compose up -d --build --wait`. On the dashboard, **Blizzard Auction House** shows the item count, latest snapshot time, last check and any error. The same information is available under `blizzard` in `/api/status`. A successful pull needs only the server and the two credentials.
+4. Open **Market prices** to see which source won for an item. The server checks Blizzard on startup and hourly, using the existing `WOW_REGION` and `WOW_MARKET`. Supported Forever markets are US, EU, KR and TW with Normal, PvP, Roleplay or Roleplay PvP rulesets and Alliance, Horde or Blackwater houses. For example, `Forever-US` and `Normal-Alliance` select ruleset 2 and house 111. [Forever auction endpoints](https://us.forums.blizzard.com/en/blizzard/t/wow-forever-api-what-works-so-far-plus-a-ts-client/60334) · [Ruleset and faction house IDs](https://hyjal.cc/auctions/us/pvp/alliance/item/279960/lodestone)
+
+Blizzard’s planning quote is the **lowest listed buyout per unit** for the base item. The scanner divides a stack buyout by its quantity and reads the unit price directly for commodities. It skips bid-only listings and modified variants. Each quote uses the corresponding snapshot’s `Last-Modified` time. Unchanged snapshots, empty houses and failed requests preserve earlier quotes with their original timestamps. **Current listings** and TSM shopping ceilings continue to use in-game scans for purchasable quantities.
+
 ### Import Booty Bay Broker prices
 
-The **server** can fetch Booty Bay Broker prices while your gaming PC is offline. The **gaming client** reads listings at the in-game auction house. Open **Market prices** to see both observations. **Latest available prices** compares the observation times from your scan, TSM and Broker for each item in the matching market. **Current listings** and TSM shopping ceilings use your in-game stack sizes, quantities and buyouts.
+The **server** can fetch Booty Bay Broker prices while your gaming PC is offline. The **gaming client** reads listings at the in-game auction house. Open **Market prices** to see both observations. **Latest available prices** compares the observation times from your scan, Blizzard, TSM and Broker for each item in the matching market. **Current listings** and TSM shopping ceilings use your in-game stack sizes, quantities and buyouts.
 
 1. On the **server**, open the `.env` beside `compose.yaml`. Set `WOW_BROKER_URLS=auto` to build the watchlist from the bundled recipe catalog. This covers auctionable reagents, crafted outputs and disenchant materials, including unlearned recipes. The server checks shared reagents first and queries each distinct item once per pass. Booty Bay Broker requires prior written permission for automated collection with either automatic selection or a manual watchlist. [Booty Bay Broker terms, section 4](https://bootybaybroker.com/terms)
 
@@ -97,7 +112,7 @@ Point your domain’s DNS at the server. On that host, configure your HTTPS reve
 
 The bundled scanner stores the accepted snapshot at `/data/scan-upload.json.gz` inside the `dashboard-data` Docker volume and restores it after a restart. Keep the same Compose project name when updating to reuse the volume. **Last upload** shows the server receipt time. **Estimate age** tracks the TSM estimate timestamp.
 
-Set `WOW_PORT` in the server's `.env` to change the host port. The server also fetches public TSM estimates. Set `WOW_TSM_PUBLIC=0` to use only uploaded estimates. A native server uses `python3 start.py server --native` with Rust and curl installed and stores data in `local-data/`.
+Set `WOW_PORT` in the server's `.env` to change the host port. The server also fetches public TSM estimates. Set `WOW_TSM_PUBLIC=0` to disable the public TSM feed. A native server uses `python3 start.py server --native` with Rust and curl installed and stores data in `local-data/`.
 
 ### Optional Docker-hosted TSM Desktop
 
@@ -123,7 +138,7 @@ To publish the new prices to the web dashboard, type `/reload` after scanning an
 
 Open **Opportunities** or **Professions** to see all crafts the planner evaluates for your market, including unlearned recipes and crafts with insufficient reagent stock. **Profit per run** defaults to **All margins**. Choose **Profitable** for gains above zero, **Break-even** for zero profit, **Loss** for negative profit, or **Unknown** when the planner lacks a cost or sale value. Check the **Stock** column separately for reagent availability.
 
-**Price basis** defaults to **Latest available prices**. For each item, the server compares your full and targeted scans, TSM (public DBRecent and any uploaded Desktop AppHelper data), and Booty Bay Broker for the same market. The newest positive unit price wins, using the time the source observed it. At equal times, a targeted check wins, followed by a full scan, TSM Desktop, public TSM and Broker. A scan with zero stock updates availability and keeps the last known price for planning. Older prices retain their timestamps and show **Stale** after the server's freshness window (six hours by default). Expand a route to see the price source and age for each auction reagent.
+**Price basis** defaults to **Latest available prices**. For each item, the server compares your full and targeted scans, Blizzard Auction House, TSM (public DBRecent and any uploaded Desktop AppHelper data), and Booty Bay Broker for the same market. The newest positive unit price wins, using the time the source observed it. At equal times, a targeted check wins, followed by a full scan, Blizzard, TSM Desktop, public TSM and Broker. A scan with zero stock updates availability and keeps the last known price for planning. Older prices retain their timestamps and show **Stale** after the server's freshness window (six hours by default). Expand a route to see the price source and age for each auction reagent.
 
 Pick **Craft → vendor**, **Craft → disenchant**, or **Craft → auction** in the route filter. The table shows the cost and profit per recipe run. Expand a row for reagents, quantities, qualifications, price sources, cooldowns when known and batch calculations. Eligible direct buy-to-vendor and buy-to-disenchant routes are also supported.
 

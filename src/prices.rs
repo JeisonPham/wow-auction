@@ -8,10 +8,11 @@ use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub(crate) enum Source {
-    // At equal observation times prefer a local search, then a full scan, then TSM.
+    // At equal observation times prefer a local search, then a full scan, then Blizzard.
     Broker,
     Public,
     Desktop,
+    Blizzard,
     Full,
     Targeted,
 }
@@ -20,6 +21,7 @@ impl Source {
         match self {
             Self::Targeted => "In-game item check",
             Self::Full => "In-game full scan",
+            Self::Blizzard => "Blizzard Auction House",
             Self::Desktop => "Desktop AppHelper",
             Self::Public => "Public DBRecent",
             Self::Broker => "Booty Bay Broker",
@@ -67,7 +69,7 @@ impl Prices {
                 && matches!(p.source, Source::Desktop | Source::Full | Source::Targeted)
         })
     }
-    fn observe(&mut self, id: u32, quote: Observation) {
+    pub(crate) fn observe(&mut self, id: u32, quote: Observation) {
         if self
             .0
             .get(&id)

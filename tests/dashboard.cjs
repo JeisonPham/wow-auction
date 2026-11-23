@@ -127,6 +127,7 @@ w.fetch = async () => {
       region: "Forever-US",
       market: "Normal-Alliance",
       tsm: { count: 43, source: "Desktop AppHelper", observed_at: at },
+      blizzard: {enabled: true, total: 19, latest_at: at - 60, last_pull_at: at},
       booty_bay_broker: {total: 2, fresh: 1, latest_at: at - 60},
       items,
     }),
@@ -186,6 +187,9 @@ async function runSimulation() {
   assert.equal(d.querySelector("#batchSizeLabel").hidden, true);
   assert.equal(d.querySelector("#profitabilityLabel").hidden, true);
   assert.equal(d.querySelectorAll("#body>tr").length, 40);
+  assert.equal(d.querySelector("#blizzard-stats").hidden, false);
+  assert.equal(d.querySelector("#blizzard-count").textContent, "19 items");
+  assert.match(d.querySelector("#blizzard-observed").textContent, /Latest snapshot.*Last check/);
   assert.equal(d.querySelector("#broker-stats").hidden, false);
   assert.equal(d.querySelector("#broker-count").textContent, "1 of 2 fresh");
   d.querySelector(".rowname").click();

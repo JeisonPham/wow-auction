@@ -162,7 +162,7 @@ pub fn report(
         b,
         feed,
         &BrokerBook::default(),
-        &Prices::default(),
+        &Prices::default().resolve(b, feed, &BrokerBook::default()),
         age,
         now,
         raw,
@@ -188,25 +188,25 @@ pub fn market_report_with_broker(
     age: u64,
     now: u64,
 ) -> Value {
-    market_report_with_history(
+    market_report_with_prices(
         region,
         market,
         b,
         feed,
         broker,
-        &Prices::default(),
+        &Prices::default().resolve(b, feed, broker),
         age,
         now,
     )
 }
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn market_report_with_history(
+pub(crate) fn market_report_with_prices(
     region: &str,
     market: &str,
     b: Option<&Bundle>,
     feed: &Feed,
     broker: &BrokerBook,
-    history: &Prices,
+    latest: &Prices,
     age: u64,
     now: u64,
 ) -> Value {
@@ -216,7 +216,7 @@ pub(crate) fn market_report_with_history(
     let merged = cat.for_player(player);
     let bundled_de = player.disenchant.is_empty() || player.non_disenchantable.is_none();
     let mut r = plan(
-        region, market, b, feed, broker, history, age, now, &merged, bundled_de,
+        region, market, b, feed, broker, latest, age, now, &merged, bundled_de,
     );
     r["catalog"] = json!({"build":cat.build,"recipes":merged.recipes.len(),"items":merged.items.len(),
         "characters":merged.professions.len(),"desktop_at":player.estimate_at,
@@ -230,7 +230,7 @@ fn plan(
     b: Option<&Bundle>,
     feed: &Feed,
     broker: &BrokerBook,
-    history: &Prices,
+    latest: &Prices,
     age: u64,
     now: u64,
     s: &Snapshot,
@@ -242,7 +242,6 @@ fn plan(
         obs.estimate_at > 0 && !obs.estimate_prices.is_empty() && obs.estimate_at >= feed.at;
     let est_at = if desktop { obs.estimate_at } else { feed.at };
     let active = fresh(est_at, now, age);
-    let latest = history.resolve(b, feed, broker);
     let mut ids: Set<_> = s.items.keys().chain(latest.0.keys()).copied().collect();
     let full = fresh(obs.newest_price_at, now, age);
     let mut target = Map::new();

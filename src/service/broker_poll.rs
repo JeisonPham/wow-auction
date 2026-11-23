@@ -111,6 +111,8 @@ pub(super) fn run(c: &Config, state: &Mutex<State>) {
                     "--fetch",
                     url,
                 ])
+                .env_remove("WOW_BLIZZARD_CLIENT_ID")
+                .env_remove("WOW_BLIZZARD_CLIENT_SECRET")
                 .env_remove("WOW_UPLOAD_TOKEN")
                 .env_remove("WOW_UPLOAD_TOKEN_FILE")
                 .output();

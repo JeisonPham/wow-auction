@@ -12,6 +12,18 @@ import start
 
 
 class LauncherTests(unittest.TestCase):
+    def test_server_env_adds_blizzard_fields_to_new_and_existing_installs(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            path = start.token_file(root)
+            fresh = path.read_text()
+            self.assertIn("WOW_BLIZZARD_CLIENT_ID=\nWOW_BLIZZARD_CLIENT_SECRET=\n", fresh)
+            upload = fresh.splitlines()[0]
+            path.write_text(upload + "\n# preserve this\nWOW_BLIZZARD_CLIENT_SECRET=existing")
+            for _ in range(2):
+                start.token_file(root)
+            self.assertEqual(path.read_text(), upload + "\n# preserve this\nWOW_BLIZZARD_CLIENT_SECRET=existing\nWOW_BLIZZARD_CLIENT_ID=\n")
+
     def test_install_mode_on_a_fresh_game_repairs_files_and_keeps_queue(self):
         script = Path(start.__file__).resolve()
         with tempfile.TemporaryDirectory() as folder:

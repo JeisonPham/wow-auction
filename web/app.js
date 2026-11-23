@@ -350,6 +350,16 @@ function render() {
       : "Awaiting first client upload";
     $("age").textContent = age(tsm.observed_at);
     $("observed").textContent = timestamp(tsm.observed_at);
+    const blizzard = report.blizzard;
+    $("blizzard-stats").hidden = !blizzard?.enabled;
+    if (blizzard?.enabled) {
+      $("blizzard-count").textContent = blizzard.total.toLocaleString() + " items";
+      const info = [];
+      if (blizzard.latest_at) info.push("Latest snapshot " + timestamp(blizzard.latest_at));
+      info.push(blizzard.last_pull_at ? "Last check " + timestamp(blizzard.last_pull_at) : "Waiting for first check");
+      if (blizzard.error) info.push(blizzard.error);
+      $("blizzard-observed").textContent = info.join(" · ");
+    }
     const broker = report.booty_bay_broker;
     $("broker-stats").hidden = !(broker?.total || broker?.configured_items);
     if (!$("broker-stats").hidden) {

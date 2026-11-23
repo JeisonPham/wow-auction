@@ -23,7 +23,8 @@ RUN add-pkg python3 curl ca-certificates firefox-esr dbus-x11 gnome-keyring gcr 
     && mkdir -p /wow /etc/services.d/dashboard /etc/services.d/tsm-sync
 COPY --from=desktop /tmp/desktop/squashfs-root /opt/tsm
 COPY --from=build /src/target/release/wow-auction-monitor /usr/local/bin/
-COPY client/broker.py client/sync.py client/addon.py client/snapshot.py client/lua_data.py client/disenchant.py /opt/scanner/
+COPY client/blizzard.py client/broker.py client/sync.py client/addon.py client/snapshot.py client/lua_data.py client/disenchant.py /opt/scanner/
+ENV WOW_BLIZZARD_HELPER=/opt/scanner/blizzard.py
 ENV WOW_BROKER_HELPER=/opt/scanner/broker.py
 COPY --chmod=755 container/start-tsm.sh /startapp.sh
 COPY --chmod=755 container/sync.sh /etc/services.d/tsm-sync/run

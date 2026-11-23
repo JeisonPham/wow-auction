@@ -1,3 +1,4 @@
+mod blizzard;
 mod broker_poll;
 use crate::{
     feed::{self, BrokerBook, Feed},
@@ -24,6 +25,7 @@ struct Config {
     market: String,
     age: u64,
     public: bool,
+    blizzard_enabled: bool,
     broker_urls: Vec<String>,
     broker_delay: u64,
     dir: PathBuf,
@@ -43,7 +45,10 @@ fn config() -> Result<Config> {
     if !(32..=512).contains(&token.len()) || !token.bytes().all(|b| b.is_ascii_graphic()) {
         return Err("set WOW_UPLOAD_TOKEN to 32–512 printable non-space ASCII characters".into());
     }
+    let id_set = !env_or("WOW_BLIZZARD_CLIENT_ID", "").trim().is_empty();
+    let secret_set = !env_or("WOW_BLIZZARD_CLIENT_SECRET", "").trim().is_empty();
     let c = Config {
+        blizzard_enabled: id_set || secret_set,
         token,
         region: env_or("WOW_REGION", "Forever-US"),
         market: env_or("WOW_MARKET", "Normal-Alliance"),
@@ -88,6 +93,9 @@ struct State {
     feed: Feed,
     prior_upload_prices: Prices,
     broker: BrokerBook,
+    blizzard: blizzard::Book,
+    blizzard_checked_at: Option<u64>,
+    blizzard_error: Option<String>,
     broker_checked_at: Option<u64>,
     broker_error: Option<String>,
     checked: u64,
@@ -102,13 +110,17 @@ impl State {
         if !self.views.is_empty() && t < self.next {
             return;
         }
-        let mut r = planner::market_report_with_history(
+        let mut prices =
+            self.prior_upload_prices
+                .resolve(self.bundle.as_ref(), &self.feed, &self.broker);
+        self.blizzard.add_to(&mut prices);
+        let mut r = planner::market_report_with_prices(
             &c.region,
             &c.market,
             self.bundle.as_ref(),
             &self.feed,
             &self.broker,
-            &self.prior_upload_prices,
+            &prices,
             c.age,
             t,
         );
@@ -122,15 +134,19 @@ impl State {
         r["booty_bay_broker"]["configured_items"] = json!(c.broker_urls.len());
         r["booty_bay_broker"]["last_pull_at"] = json!(self.broker_checked_at);
         r["booty_bay_broker"]["pull_error"] = json!(self.broker_error);
+        r["blizzard"] = json!({"enabled":c.blizzard_enabled,"total":self.blizzard.items.len(),
+            "latest_at":self.blizzard.modified.iter().copied().max().filter(|t| *t > 0),
+            "last_pull_at":self.blizzard_checked_at,"error":self.blizzard_error});
         r["uploaded_at"] = json!(self.uploaded_at);
         r["tsm"]["error"] = json!(self.error);
-        let status = json!({"responsive":true,"region":c.region,"market":c.market,"upload_revision":r["upload_revision"],"generated_at":t,"tsm":r["tsm"],"booty_bay_broker":r["booty_bay_broker"],"uploaded_at":self.uploaded_at,"public_enabled":c.public,"public_checked_at":self.checked});
+        let status = json!({"responsive":true,"region":c.region,"market":c.market,"upload_revision":r["upload_revision"],"generated_at":t,"tsm":r["tsm"],"booty_bay_broker":r["booty_bay_broker"],"blizzard":r["blizzard"],"uploaded_at":self.uploaded_at,"public_enabled":c.public,"public_checked_at":self.checked});
         let queue = json!({"region":c.region,"market":c.market,"items":r["scan_queue"],"estimate_at":r["queue_estimate_at"],"expires_at":r["queue_estimate_at"].as_u64().filter(|n|*n>0).map_or(0,|n|n+c.age),"upload_revision":r["upload_revision"]});
         let candidates =
             json!({"items":r["scan_queue"],"tsm":r["tsm"],"upload_revision":r["upload_revision"]});
         let mut times = vec![self.feed.at];
         times.extend(self.feed.observed.values().copied());
         times.extend(self.prior_upload_prices.0.values().map(|p| p.at));
+        times.extend(self.blizzard.items.values().map(|p| p.at));
         times.extend(self.broker.items.values().map(|p| p.observed_at));
         if let Some(b) = &self.bundle {
             times.extend(b.times());
@@ -430,6 +446,9 @@ fn restore(c: &Config) -> Result<State> {
     Ok(State {
         bundle,
         prior_upload_prices,
+        blizzard: blizzard::restore(c)?,
+        blizzard_checked_at: None,
+        blizzard_error: None,
         uploaded_at,
         feed,
         broker,
@@ -461,6 +480,11 @@ pub fn run() -> Result<()> {
     let server =
         Arc::new(Server::http(env_or("WOW_BIND", "0.0.0.0:8765")).map_err(|e| e.to_string())?);
     eprintln!("WoW Auction Monitor listening on {}", server.server_addr());
+    if c.blizzard_enabled {
+        let c = c.clone();
+        let state = state.clone();
+        thread::spawn(move || blizzard::run(&c, &state));
+    }
     if !c.broker_urls.is_empty() {
         let c = c.clone();
         let state = state.clone();
@@ -516,6 +540,7 @@ mod tests {
             market: "Normal-Alliance".into(),
             age: 21600,
             public: true,
+            blizzard_enabled: false,
             broker_urls: vec![],
             broker_delay: 5,
             dir: dir.to_owned(),

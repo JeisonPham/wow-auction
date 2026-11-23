@@ -15,6 +15,7 @@ from client.addon import install
 
 def token_file(root):
     path = root / ".env"
+    keys = ("WOW_BLIZZARD_CLIENT_ID", "WOW_BLIZZARD_CLIENT_SECRET")
     if not path.exists():
         try:
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -22,6 +23,17 @@ def token_file(root):
             return path
         with os.fdopen(fd, "w") as f:
             f.write("WOW_UPLOAD_TOKEN=" + secrets.token_hex(32) + "\n")
+            f.writelines(key + "=\n" for key in keys)
+    else:
+        # Upgrade an existing server config while preserving its credentials and comments.
+        content = path.read_text(encoding="utf-8-sig")
+        present = {line.partition("=")[0].strip() for line in content.splitlines() if "=" in line}
+        missing = [key for key in keys if key not in present]
+        if missing:
+            with path.open("a", encoding="utf-8") as f:
+                if content and not content.endswith("\n"):
+                    f.write("\n")
+                f.writelines(key + "=\n" for key in missing)
     return path
 
 
@@ -260,6 +272,8 @@ def main():
         return docker(root, env, game, desktop=args.desktop)
     env.setdefault("WOW_BIND", "127.0.0.1:" + env.get("WOW_PORT", "8765"))
     env.setdefault("WOW_DATA_DIR", str(root / "local-data"))
+    env.setdefault("WOW_BLIZZARD_HELPER", str(root / "client" / "blizzard.py"))
+    env.setdefault("WOW_BLIZZARD_PYTHON", sys.executable)
     env.setdefault("WOW_BROKER_HELPER", str(root / "client" / "broker.py"))
     env.setdefault("WOW_BROKER_PYTHON", sys.executable)
     binary = (
