@@ -7,6 +7,7 @@
     <link rel="stylesheet" href="/app.css" />
     <script src="/shopping.js" defer></script>
     <script src="/history.js" defer></script>
+    <script src="/route.js" defer></script>
     <script src="/app.js" defer></script>
   </head>
   <body>
@@ -24,6 +25,7 @@
     <main>
       <div class="intro">
         <div>
+          <a id="routeBack" hidden></a>
           <p id="scope">Auction house</p>
           <h1>Market prices</h1>
         </div>
@@ -55,12 +57,12 @@
         </div>
       </div>
       <nav aria-label="Dashboard views">
-        <a href="#market">Market prices</a
-        ><a href="#opportunities">Opportunities</a
-        ><a href="#professions">Professions</a>
+        <a href="/#market">Market prices</a
+        ><a href="/#opportunities">Opportunities</a
+        ><a href="/#professions">Professions</a>
       </nav>
       <div id="notice" role="status" hidden></div>
-      <section>
+      <section id="workspace">
         <div class="controls">
           <label class="search"
             >Find item<input
@@ -151,6 +153,7 @@
           </div>
         </footer>
       </section>
+      <article id="routePage" hidden></article>
     </main>
     <dialog id="simulation" aria-labelledby="sim-title">
       <header class="sim-heading">

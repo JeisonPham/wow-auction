@@ -83,7 +83,9 @@ let report,
   offline = "",
   rows = [],
   etag;
+let routePage;
 function view() {
+  if (routePage) return routePage.from === "market" ? "opportunities" : routePage.from;
   return Object.hasOwn(titles, location.hash.slice(1))
     ? location.hash.slice(1)
     : "market";
@@ -114,6 +116,13 @@ function options(list, value) {
     .join("");
 }
 function setup() {
+  routePage = readRouteAddress();
+  document.body.classList.toggle("route-view", !!routePage);
+  $("routePage").hidden = $("routeBack").hidden = !routePage;
+  if (routePage) {
+    $("routeBack").href = "/#" + routePage.from;
+    $("routeBack").textContent = "← " + titles[routePage.from];
+  }
   const v = view(),
     p = prefs();
   document.querySelector("h1").textContent = titles[v];
@@ -306,7 +315,7 @@ function trainingPlans(rows) {
               "<li><strong>" +
               esc(r.profession) +
               " · " +
-              esc(i.name) +
+              '<a href="' + esc(routeHref(i, r, "professions")) + '">' + esc(i.name) + '</a>' +
               "</strong> · " +
               esc(routeLabel(r)) +
               " · " +
@@ -323,7 +332,7 @@ function trainingPlans(rows) {
       : "<p>No profitable training opportunities match these filters.</p>")
   );
 }
-function render() {
+function render(preserveDraft = false) {
   const v = view(),
     p = prefs(),
     market = v === "market",
@@ -389,6 +398,11 @@ function render() {
   $("notice").hidden = !notice;
   $("notice").textContent = notice;
   rows = [];
+  if (routePage) {
+    renderRoutePage(preserveDraft);
+    save();
+    return;
+  }
   const profs = new Set();
   for (const i of items) {
     const match = (i.name + " " + i.id)
@@ -487,10 +501,11 @@ function render() {
       .map((s) => "<th>" + s + "</th>")
       .join("") +
     "</tr>";
+  const focusedHour = document.activeElement.closest(".hourly-chart")?.dataset.chartKey;
   $("body").innerHTML = rows
     .slice(start, start + 40)
     .map(({ i, r, key }, j) => {
-      const open = !!p.open[key],
+      const open = market && !!p.open[key],
         idx = start + j;
       const cells = market
         ? [
@@ -556,18 +571,13 @@ function render() {
               : ""),
         );
       }
+      const title = esc(i.name) + ' <span class="id">#' + i.id + '</span>';
+      const rowLink = market
+        ? '<button class="rowname" data-row="' + idx + '" aria-expanded="' + open + '">' +
+          (open ? "▾ " : "▸ ") + title + '</button>'
+        : '<a class="rowname" aria-label="' + esc(i.name + " · " + routeLabel(r)) + '" href="' + esc(routeHref(i, r, v)) + '">' + title + '</a>';
       return (
-        '<tr><td><button class="rowname" data-row="' +
-        idx +
-        '" aria-expanded="' +
-        open +
-        '">' +
-        (open ? "▾" : "▸") +
-        " " +
-        esc(i.name) +
-        ' <span class="id">#' +
-        i.id +
-        "</span></button></td>" +
+        (market ? '<tr>' : '<tr class="route-row">') + '<td>' + rowLink + '</td>' +
         cells.map((x) => "<td>" + x + "</td>").join("") +
         "</tr>" +
         (open
@@ -587,14 +597,18 @@ function render() {
             money(i.vendor_sell) +
             "</p>" +
             (market ? marketHistory(i) + marketSimulationButton(i, idx) : "") +
-            (r ? [r] : i.routes)
-              .map((route, n) => detail(i, r || pricedRoute(i, route), idx, n))
-              .join("") +
+            (i.routes.length ? '<h3>Routes</h3><ul class="item-routes">' +
+              i.routes.map(route => '<li><a href="' + esc(routeHref(i, route, "market")) + '">' +
+                esc(route.name + " · " + routeLabel(route)) + '</a></li>').join("") + '</ul>' : "") +
             "</div></td></tr>"
           : "")
       );
     })
     .join("");
+  if (focusedHour) {
+    const chart = [...$("body").querySelectorAll(".hourly-chart")].find(el => el.dataset.chartKey === focusedHour);
+    chart?.querySelector(".hour-slider").focus({preventScroll: true});
+  }
   $("empty").textContent = rows.length
     ? ""
     : !report
@@ -1228,147 +1242,21 @@ function shoppingPanel(r, c, input) {
     "</ul>"
   );
 }
-function detail(i, r, idx, n) {
-  const override = prefs().calc[routeKey(i, r)]?.batch;
-  const c = calc(i, r),
-    b = summary(i, r, c);
-  const input = (key, label, max) =>
-    "<label>" +
-    label +
-    ' <input type="number" data-field="' +
-    key +
-    '" min="' +
-    (key === "post" ? 0 : 1) +
-    '" max="' +
-    max +
-    '" value="' +
-    c[key] +
-    '"></label>';
-  const toggle = (key, label) =>
-    '<label><input type="checkbox" data-field="' +
-    key +
-    '" ' +
-    (c[key] ? "checked" : "") +
-    "> " +
-    label +
-    "</label>";
-  return (
-    '<div class="route" data-idx="' +
-    idx +
-    '" data-route="' +
-    n +
-    '"><h3>' +
-    esc(r.name) +
-    " · " +
-    esc(routeLabel(r)) +
-    "</h3>" +
-    (r.advice ? "<p class='estimated'>" + esc(r.advice) + "</p>" : "") +
-    "<p>" +
-    esc(
-      [r.profession, reqText(r), r.characters?.join(", ")]
-        .filter(Boolean)
-        .join(" · "),
-    ) +
-    "</p><ul>" +
-    r.inputs
-      .map(
-        (l) =>
-          "<li>" +
-          esc(l.name) +
-          " × " +
-          l.quantity * c.batch +
-          " · " +
-          esc(lineBasis(l, r)) +
-          " · " +
-          money(l.unit_cost) +
-          " each · " +
-          money(l.cost == null ? null : l.cost * c.batch) +
-          " for batch</li>",
-      )
-      .join("") +
-    (r.outputs || [])
-      .map(
-        (l) =>
-          "<li>Expected " +
-          esc(l.name) +
-          " × " +
-          l.quantity * c.batch +
-          " · " +
-          money(l.unit_cost) +
-          " each (" +
-          esc(lineBasis(l, r)) +
-          ")</li>",
-      )
-      .join("") +
-    "</ul>" +
-    (r.stages?.length
-      ? "<h4>Production steps · " +
-        c.batch +
-        " final runs</h4><ol>" +
-        pathSteps(r, c.batch)
-          .map((s) => "<li>" + esc(s) + "</li>")
-          .join("") +
-        "</ol>"
-      : "<p>" + steps(r) + "</p>") +
-    (r.expected_inputs
-      ? "<p>Disenchant yields are averages. Extra crafts may be needed to obtain enough materials. " +
-        esc(report?.catalog?.disenchant_source || "") +
-        "</p>"
-      : "") +
-    '<p class="hint">' +
-    esc(r.stock) +
-    " · " + basisText(r) +
-    (destroys(r)
-      ? " Expected proceeds include the auction cut and sale reserve. Drops and sale prices vary. " +
-        esc(report?.catalog?.disenchant_source || "")
-      : r.kind === "craft_auction"
-        ? " Net includes a 5% auction cut and 15% sale reserve."
-        : "") +
-    "</p>" +
-    '<label>Batch size override <input type="number" data-field="batch" min="1" max="10000" step="1" title="Leave blank to use the dashboard batch size" placeholder="' +
-    saved.batchSize +
-    '" value="' +
-    (validBatch(override) ? override : "") +
-    '"></label>' +
-    toggle("mail", "Mail to alt") +
-    (c.mail
-      ? input("stack", "Default stack", 100000) +
-        input("post", "Postage (copper)", 100000) +
-        (r.kind !== "vendor" ? toggle("back", "Include return mail") : "") +
-        (c.back && destroys(r) ? input("returns", "Return stacks", 10000) : "")
-      : "") +
-    "<p>Postage " +
-    money(b.postage) +
-    " · Cost " +
-    money(b.cost) +
-    " · Proceeds " +
-    money(b.out) +
-    " · <strong>Profit " +
-    money(b.net) +
-    "</strong></p>" +
-    (r.timing
-      ? "<p><strong>" +
-        batchTiming(r, b) +
-        "</strong></p><p class='hint'>" +
-        timingBasis(r) +
-        "</p>"
-      : "") +
-    (b.shortages.length
-      ? '<p class="estimated">Stock shortage · ' +
-        esc(b.shortages.join(" / ")) +
-        "</p>"
-      : "") +
-    timingPanel(i, r, c) +
-    (r.shopping ? shoppingPanel(r, c, input) : "") +
-    "<button data-copy>Copy Markdown</button> " +
-    (isCraft(r) ? craftSimulationButton(r) : "") +
-    "</div>"
-  );
-}
-$("body").onclick = async (e) => {
+const main = document.querySelector("main");
+bindHourlyCharts(main);
+main.onclick = async (e) => {
   const btn = e.target.closest("button");
-  if (!btn) return;
-  if (btn.dataset.row != null) {
+  if (!btn) {
+    const row = e.target.closest(".route-row");
+    if (row && !e.target.closest("a") && !window.getSelection()?.toString() &&
+        !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) location.assign(row.querySelector("a").href);
+    return;
+  }
+  if (btn.dataset.period) {
+    prefs().chartPeriod = btn.dataset.period;
+    render();
+    $("routePage").querySelector('[data-period="' + btn.dataset.period + '"]').focus({preventScroll:true});
+  } else if (btn.dataset.row != null) {
     const key = rows[+btn.dataset.row].key;
     prefs().open[key] = !prefs().open[key];
     render();
@@ -1448,7 +1336,7 @@ $("body").onclick = async (e) => {
     }
   }
 };
-$("body").onchange = (e) => {
+main.onchange = (e) => {
   const x = e.target,
     el = x.closest(".route");
   if (!el || !x.dataset.field) return;
@@ -1489,7 +1377,7 @@ for (const key of [
 ])
   $(key).oninput = (e) => {
     prefs()[key] = e.target.value;
-    prefs().page = 0;
+    if (!routePage) prefs().page = 0;
     render();
   };
 $("prev").onclick = () => {
@@ -1526,11 +1414,16 @@ async function refresh() {
     $("connection").className = "";
   } finally {
     busy = false;
-    render();
+    render(true);
   }
 }
 $("refresh").onclick = refresh;
 window.onhashchange = setup;
+window.addEventListener("pageshow", event => {
+  if (!event.persisted) return;
+  try { saved = JSON.parse(sessionStorage.wam || JSON.stringify(saved)); } catch {}
+  setup();
+});
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) refresh();
 });

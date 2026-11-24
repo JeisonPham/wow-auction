@@ -379,12 +379,13 @@ fn handle(mut r: Request, c: &Config, state: &Mutex<State>) {
         return fail(r, 405, "unsupported method");
     }
     let asset = match path.as_str() {
-        "/" => Some((
+        "/" | "/route" => Some((
             "text/html; charset=utf-8",
             include_str!("../web/index.html"),
         )),
         "/app.css" => Some(("text/css", include_str!("../web/app.css"))),
         "/app.js" => Some(("text/javascript", include_str!("../web/app.js"))),
+        "/route.js" => Some(("text/javascript", include_str!("../web/route.js"))),
         "/history.js" => Some(("text/javascript", include_str!("../web/history.js"))),
         "/shopping.js" => Some(("text/javascript", include_str!("../web/shopping.js"))),
         "/price-simulation.js" => Some((

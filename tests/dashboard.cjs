@@ -91,9 +91,10 @@ items[6].routes = [
       {
         action: "craft",
         name: "Ring",
+        item: 9001,
         quantity: 2,
         runs: 2,
-        inputs: [{ name: "Ore", quantity: 6 }],
+        inputs: [{ id:1001, name: "Ore", quantity: 6 }],
         requirements: {
           pattern: "Plans: Ring",
           pattern_character_level: 30,
@@ -104,11 +105,12 @@ items[6].routes = [
       {
         action: "disenchant",
         name: "Ring",
+        item: 9001,
         quantity: 2,
-        outputs: [{ name: "Dust", quantity: 1 }],
+        outputs: [{ id:9002, name: "Dust", quantity: 1 }],
       },
     ],
-    final_inputs: [{ name: "Dust", quantity: 1 }],
+    final_inputs: [{ id:9002, name: "Dust", quantity: 1 }],
     expected_inputs: true,
   },
 ];
@@ -120,15 +122,18 @@ w.fetch = async (url) => {
   if (url.startsWith("/api/price-history?")) {
     historyHits++;
     const args = new URL(url, "http://localhost").searchParams;
-    const marketItem = args.get("items") === "1001";
-    if (!marketItem) assert.equal(args.get("items"), "1001:3");
-    assert.equal(args.get("floor"), marketItem ? null : "0");
-    const rows = [];
-    for (let day = 0; day < 3; day++) {
-      rows.push([historicDay + day*86400 + 8*3600, 3, 9],
-                [historicDay + day*86400 + 18*3600, 8, 24]);
+    const hourly = {};
+    for (const pair of args.get("items").split(",")) {
+      const [id, qty = "1"] = pair.split(":");
+      hourly[id] = [];
+      for (let day = 0; day < 3; day++) {
+        for (const [h,unit] of [[8,3],[18,8]]) {
+          const price = id === "1001" ? unit : 10 * unit;
+          hourly[id].push([historicDay + day*86400 + h*3600, price, price*Number(qty)]);
+        }
+      }
     }
-    return {ok: true, json: async () => ({days: 28, items: {1001: rows}})};
+    return {ok:true, json:async () => ({days:28, items:hourly})};
   }
 
   if (fail) throw Error("Offline");
@@ -183,10 +188,22 @@ w.Worker = class {
   }
 };
 w.eval(
-  ["web/shopping.js", "web/history.js", "web/app.js"]
+  ["web/shopping.js", "web/history.js", "web/route.js", "web/app.js"]
     .map((file) => fs.readFileSync(file, "utf8"))
     .join("\n"),
 );
+// jsdom does not load a second document when following a link.
+function visit(href) {
+  dom.reconfigure({url:new URL(href,w.location.href).href});
+  d.querySelector("#body").replaceChildren();
+  d.querySelector("#routePage").replaceChildren();
+  w.onhashchange();
+}
+function visitRoute() {
+  const a = d.querySelector("a.rowname");
+  assert.equal(new URL(a.href).pathname, "/route");
+  visit(a.href);
+}
 const wait = () => new Promise((r) => setTimeout(r, 5));
 async function runSimulation() {
   d.querySelector("#sim-form button").click();
@@ -279,7 +296,7 @@ async function runSimulation() {
   assert.match(panel.textContent, /Highest projected repeat gold per hour/);
   filter("route", "chain");
   assert.equal(d.querySelectorAll("#body>tr").length, 1);
-  d.querySelector(".rowname").click();
+  visitRoute();
   assert.match(d.querySelector(".route").textContent, /Disenchant 2 × Ring/);
   assert.match(
     d.querySelector(".route").textContent,
@@ -289,17 +306,25 @@ async function runSimulation() {
     d.querySelector(".route").textContent,
     /Craft 1 × Charm from 1 × Dust/,
   );
+  await wait();
+  assert.equal(d.querySelectorAll(".material-card .hourly-chart").length, 4);
+  assert.match(d.querySelector(".material-grid").textContent, /Intermediate craft · Disenchanted/);
+  const historyBeforeMode = historyHits;
+  d.querySelector('[data-period="daily"]').click();
+  assert.equal(d.querySelectorAll(".material-card .hour-slider[max='27']").length, 4);
+  assert.match(d.querySelector(".material-card").textContent, /2 sampled hours/);
+  assert.equal(historyHits, historyBeforeMode);
+  d.querySelector('[data-period="hourly"]').click();
   d.querySelector("[data-copy]").click();
   await wait();
   assert.match(copied, /Sell the finished items to a vendor/);
   assert.equal(d.querySelector("#batchSizeLabel").hidden, false);
   assert.equal(d.querySelector("#batchSize").value, "1");
   filter("batchSize", "3");
-  assert.match(d.querySelector("#head").textContent, /Batch estimate/);
-  const estimate = () =>
-    d.querySelector("#body tr:first-child td:last-child").textContent;
-  assert.match(estimate(), /2s 49c profit3 runs · 1m 12s/);
-  assert.match(estimate(), /Insufficient stock for batch/);
+  const estimate = () => d.querySelector(".route").textContent;
+  assert.match(estimate(), /Batch profit2s 49c/);
+  assert.match(estimate(), /Batch time1m 12s/);
+  assert.match(estimate(), /Stock shortage/);
   assert.match(d.querySelector(".route").textContent, /Disenchant 6 × Ring/);
   d.querySelector("[data-copy]").click();
   await wait();
@@ -310,6 +335,8 @@ async function runSimulation() {
     d.querySelector("#batchSize").dispatchEvent(new w.Event("blur"));
     assert.equal(d.querySelector("#batchSize").value, "3");
   }
+  visit(d.querySelector("#routeBack").href);
+  assert.equal(d.querySelector("#route").value, "chain");
   filter("route", "");
   filter("trainingCost", "1");
   assert.match(panel.textContent, /20 profitable crafts/);
@@ -325,15 +352,15 @@ async function runSimulation() {
   search.value = "BUCK";
   search.oninput({ target: search });
   assert.equal(d.querySelectorAll("#body>tr").length, 1);
-  d.querySelector(".rowname").click();
+  visitRoute();
   const batch = d.querySelector('[data-field="batch"]');
   assert.equal(batch.placeholder, "3");
-  assert.match(estimate(), /3 runs · 2m 5s/);
+  assert.match(estimate(), /Batch time2m 5s/);
   batch.value = "2";
   batch.dispatchEvent(new w.Event("change", { bubbles: true }));
-  assert.match(estimate(), /2 runs · 1m 5s/);
+  assert.match(estimate(), /Batch time1m 5s/);
   filter("batchSize", "5");
-  assert.match(estimate(), /2 runs · 1m 5s/);
+  assert.match(estimate(), /Batch time1m 5s/);
   assert.match(d.body.textContent, /Stock shortage · Ore needs 6, checked 4/);
   d.querySelector('[data-field="mail"]').click();
   d.querySelector("[data-copy]").click();
@@ -371,8 +398,8 @@ async function runSimulation() {
   const override = d.querySelector('[data-field="batch"]');
   override.value = "";
   override.dispatchEvent(new w.Event("change", { bubbles: true }));
-  assert.match(estimate(), /5 runs · 4m 5s/);
-  assert.match(d.querySelector(".route li").textContent, /Ore × 15/);
+  assert.match(estimate(), /Batch time4m 5s/);
+  assert.match(d.querySelector(".cost-list li").textContent, /Ore × 15/);
   d.querySelector("[data-sim-craft]").click();
   d.querySelector("#sim-volatility").value = 0;
   assert.match(await runSimulation(), /Mean batch cost1s 15c/);
@@ -395,7 +422,7 @@ async function runSimulation() {
   d.querySelector("[data-sim-craft]").click();
   assert.equal(maxYield.value, "5");
   d.querySelector("#sim-close").click();
-  w.location.hash = "#opportunities";
+  visit("/#opportunities");
   await wait();
   filter("pricing", "estimates");
   filter("level", "20");
@@ -412,7 +439,7 @@ async function runSimulation() {
   d.querySelector("#refresh").click();
   await wait();
   assert.match(d.querySelector("#notice").textContent, /Connection lost/);
-  assert.equal(d.querySelectorAll(".route").length, 1);
+  assert.equal(d.querySelectorAll("a.rowname").length, 1);
 
   const marginCases = [
     ["Margin gain", "craft", 12, "insufficient"],
@@ -473,7 +500,7 @@ async function runSimulation() {
   assert.match(d.querySelector("#body").textContent, /Margin loss/);
   // Current prices come from whole scanned stacks and the capped TSM search
   // must be derived from the same batch and postage used by the profit filter.
-  w.location.hash = "#opportunities";
+  visit("/#opportunities");
   await wait();
   filter("pricing", "listings");
   filter("search", "Buckle");
@@ -493,7 +520,7 @@ async function runSimulation() {
   await wait();
   filter("profitability", "profit");
   assert.equal(d.querySelector("#body tr td:nth-child(4)").textContent, "78c");
-  d.querySelector(".rowname").click();
+  visitRoute();
   assert.match(d.querySelector(".route").textContent, /Ore × 4 · max 24c each/);
   d.querySelector("[data-tsm]").click();
   await wait();
@@ -504,8 +531,11 @@ async function runSimulation() {
   assert.match(d.querySelector(".route").textContent, /Wait for lower/);
   assert.match(d.querySelector(".route").textContent, /max 5c each/);
   filter("batchSize", "2");
+  const shoppingRoute = w.location.href;
+  visit(d.querySelector("#routeBack").href);
   assert.equal(d.querySelectorAll(".rowname").length, 0);
   filter("profitability", "unknown");
+  visit(shoppingRoute);
   assert.match(
     d.querySelector(".route").textContent,
     /Insufficient listed quantity/,
@@ -524,28 +554,56 @@ async function runSimulation() {
   filter("profitability", "");
   filter("pricing", "percentile");
   assert.equal(d.querySelector("#floorLabel").hidden, false);
-  assert.equal(d.querySelector("#body tr td:nth-child(4)").textContent, "91c");
+  assert.match(estimate(), /Batch profit91c/);
   assert.match(d.querySelector(".route").textContent, /P30 · 10 units listed · Blizzard/);
-  d.querySelector("[data-history]").click();
   await wait();
-  assert.equal(historyHits, 1);
+  const firstHits = historyHits;
+  assert.ok(firstHits > 0);
   assert.match(d.querySelector(".route").textContent, /08:00 UTC · 9c median per batch/);
   assert.match(d.querySelector(".route").textContent, /Sell · Any hour · 1s 0c at vendor prices/);
   assert.match(d.querySelector(".route").textContent, /Hourly medians and sampled days/);
+  const chart = () => d.querySelector(".hourly-chart");
+  const slider = () => chart().querySelector(".hour-slider");
+  const bar = hour => chart().querySelector('[data-hour="' + hour + '"]');
+  const readout = () => chart().querySelector(".hour-readout").textContent;
+  assert.equal(chart().querySelectorAll("[data-hour]").length, 24);
+  assert.equal(slider().value, "8");
+  assert.equal(chart().querySelectorAll(".vendor-rule").length, 1);
+  assert.ok(bar(8).querySelector("[data-best]"));
+  bar(18).firstElementChild.dispatchEvent(new w.MouseEvent("pointerover", {bubbles:true}));
+  assert.equal(slider().value, "18");
+  assert.match(readout(), /18:00 UTC.*Batch cost 24c · 3 sampled days.*Sale proceeds 1s 0c · fixed vendor price/);
+  bar(13).click();
+  assert.equal(slider().value, "13");
+  assert.match(readout(), /13:00 UTC.*No sample/);
+  assert.equal(bar(13).firstElementChild.style.visibility, "hidden");
+  slider().focus();
+  slider().value = "8";
+  slider().dispatchEvent(new w.Event("input", {bubbles: true}));
+  assert.match(slider().getAttribute("aria-valuetext"), /08:00 UTC.*9c.*lowest batch cost/);
+  d.querySelector("#refresh").click();
+  await wait();
+  assert.equal(slider(), d.activeElement);
+  assert.equal(historyHits, firstHits);
+  bar(18).click();
+  d.querySelector("[data-history]").click();
+  await wait();
+  assert.equal(slider().value, "18");
+  assert.equal(historyHits, firstHits + 1);
   d.querySelector("[data-sim-craft]").click();
   assert.match(d.querySelector("#sim-inputs").textContent, /P30 · Blizzard/);
   dialog.close();
   filter("batchSize", "2");
-  assert.equal(d.querySelector("#body tr td:nth-child(4)").textContent, "76c");
+  assert.match(estimate(), /Batch profit1s 52c/);
   assert.match(d.querySelector(".route").textContent, /P60 · 10 units/);
   filter("batchSize", "1");
   filter("floor", "90");
   assert.match(d.querySelector(".route").textContent, /P90 · 10 units/);
   filter("batchSize", "4");
-  assert.equal(d.querySelector("#body tr td:nth-child(4)").textContent, "Unknown");
+  assert.match(estimate(), /Batch profit—/);
   assert.match(d.querySelector(".route").textContent, /Insufficient supply/);
   assert.equal(d.querySelector("[data-tsm]"), null);
-  w.location.hash = "#market";
+  visit("/#market");
   await wait();
   filter("search", "1001");
   d.querySelector(".rowname").click();
@@ -553,6 +611,20 @@ async function runSimulation() {
   await wait();
   assert.match(d.querySelector(".detail").textContent, /Lowest unit price · 08:00 UTC · 3c median per unit/);
   assert.match(d.querySelector(".detail").textContent, /Highest unit price · 18:00 UTC · 8c median per unit/);
+  assert.equal(chart().querySelectorAll("[data-metric]").length, 1);
+  assert.equal(chart().querySelectorAll("[data-best]").length, 2);
+  bar(18).click();
+  assert.match(readout(), /18:00 UTC.*Unit price 8c · 3 sampled days · highest unit price/);
+  assert.equal(chart().querySelector(".vendor-rule"), null);
+  for (const query of [
+    "exit=craft_auction&path=direct&recipe=b",
+    "exit=craft&path=chain&recipe=b",
+    "exit=craft&path=direct&recipe=other",
+  ]) {
+    visit("/route?item=2000&" + query);
+    assert.equal(d.querySelector("h1").textContent, "Route unavailable");
+    assert.equal(d.querySelector(".route-metrics"), null);
+  }
   console.log(
     "Dashboard search, pagination, profit filters, routes, batch shortage, postage, clipboard and offline retention passed",
   );

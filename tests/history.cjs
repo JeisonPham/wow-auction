@@ -1,8 +1,10 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const vm = require("node:vm");
-const { timingProfile, bestHour } = vm.runInNewContext(
-  fs.readFileSync("web/history.js", "utf8") + ";({timingProfile,bestHour})",
+const { timingProfile, bestHour, hourlyChart } = vm.runInNewContext(
+  fs.readFileSync("web/history.js", "utf8") +
+    ';timingCache.set("fixture", {});({timingProfile,bestHour,hourlyChart})',
+  {money: n => n + "c", esc: String},
 );
 const day = 86400;
 const rows = (morning, evening, n = 4) =>
@@ -55,6 +57,17 @@ assert.equal(
   ).winners.length,
   2,
 );
+const chartFor = (...sides) => hourlyChart(sides.map((side, i) => [["Batch cost","Sale proceeds"][i], side]), "fixture", "recipe");
+const chart = chartFor(optimal.buy, optimal.sell);
+assert.equal((chart.match(/ data-best[ >]/g) || []).length, 2);
+assert.match(chart, /highest sale proceeds/);
+assert.doesNotMatch(chart, /class="vendor-rule/);
+const early = chartFor(bestHour([[8 * 3600, 0]], false));
+assert.match(early, /0c · 1 sampled day/);
+assert.match(early, /style="height:0%"/);
+assert.doesNotMatch(early, /data-best/);
+assert.doesNotMatch(chartFor(bestHour([], false), {state:"fixed", value:null}), /hour-plot/);
+assert.equal((chartFor({state:"fixed", value:0}, {state:"fixed", value:100}).match(/class="vendor-rule/g) || []).length, 2);
 console.log(
   "Hourly route costs, auction and disenchant proceeds, vendor prices, ties and sparse history passed.",
 );

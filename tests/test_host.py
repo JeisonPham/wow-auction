@@ -78,6 +78,10 @@ class HostTests(unittest.TestCase):
 
     def test_routes_and_restore(self):
         self.assertEqual(self.req("/healthz")[:2], (200, b"ok\n"))
+        code, html, _ = self.req("/route?item=2000&recipe=b&exit=craft&path=direct")
+        self.assertEqual(code, 200)
+        self.assertIn(b'id="routePage"', html)
+        self.assertIn(b'fullRoute', self.req("/route.js")[1])
         self.assertEqual(self.req("/api/scan-queue")[0], 401)
         self.assertEqual(self.req("/api/scan-queue", token=self.token)[0], 503)
         at = int(time.time())

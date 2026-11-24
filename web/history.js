@@ -1,24 +1,5 @@
 // Each hourly sample is [UTC hour start, observed unit price, budget for the requested quantity].
 const timingCache = new Map();
-function timingRequest(item, route, batch, basis, floor) {
-  const needs = new Map();
-  for (const line of route.inputs) needs.set(line.id, line.quantity * batch);
-  if (route.kind === "craft_auction") {
-    if (!needs.has(item.id)) needs.set(item.id, 1);
-  }
-  for (const line of route.outputs || []) {
-    if (!needs.has(line.id)) needs.set(line.id, 1);
-  }
-  const pairs = [...needs]
-    .sort(([a], [b]) => a - b)
-    .map(([id, n]) => id + ":" + n);
-  return (
-    "/api/price-history?items=" +
-    pairs.join(",") +
-    (basis === "percentile" ? "&floor=" + floor : "")
-  );
-}
-
 function median(values) {
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
@@ -186,6 +167,188 @@ function timingText(label, result, basis = "per batch") {
   );
 }
 
+const utcHour = (hour) => String(hour).padStart(2, "0") + ":00";
+
+function dailyPriceChart(samples, url, key) {
+  const today = Math.floor(Date.now() / 86400000),
+    first = today - 27;
+  const dates = Array.from({ length: 28 }, (_, i) =>
+    new Date((first + i) * 86400000).toISOString().slice(0, 10),
+  );
+  const buckets = dates.map(() => []);
+  for (const [t, v] of samples) buckets[Math.floor(t / 86400) - first]?.push(v);
+  const sampled = buckets.flatMap((values, hour) =>
+    values.length
+      ? [{ hour, count: values.length, value: median(values) }]
+      : [],
+  );
+  return hourlyChart([["Unit price", { sampled }]], url, key, null, dates);
+}
+
+function hourlyChart(columns, url, key, highPrice, dates) {
+  const entry = timingCache.get(url);
+  const series = columns.map(([label, side]) => ({
+    label,
+    fixed: side.state === "fixed",
+    value: side.value,
+    bins: new Map((side.sampled || []).map((bin) => [bin.hour, bin])),
+    best: new Map(),
+  }));
+  function mark(result, s, label) {
+    if (result?.state === "ready" && result.winners.length < result.compared) {
+      for (const bin of result.winners) s.best.set(bin.hour, label);
+    }
+  }
+  mark(
+    columns[0][1],
+    series[0],
+    highPrice ? "lowest unit price" : "lowest batch cost",
+  );
+  if (highPrice) mark(highPrice, series[0], "highest unit price");
+  else if (series[1]) mark(columns[1][1], series[1], "highest sale proceeds");
+  const values = series
+    .flatMap((s) =>
+      s.fixed ? [s.value] : [...s.bins.values()].map((bin) => bin.value),
+    )
+    .filter(Number.isFinite);
+  if (!values.length)
+    return '<p class="hint">The chart will appear when hourly prices are available.</p>';
+
+  const peak = Math.max(...values) || 1;
+  const power = 10 ** Math.floor(Math.log10(peak));
+  const ceiling = ([1, 2, 5, 10].find((n) => n * power >= peak) || 10) * power;
+  const divisor = ceiling >= 10000 ? 10000 : ceiling >= 100 ? 100 : 1;
+  const unit = divisor === 10000 ? "g" : divisor === 100 ? "s" : "c";
+  const tick = (n) =>
+    (n / divisor).toLocaleString(undefined, {
+      maximumSignificantDigits: 3,
+      notation: n / divisor >= 1000 ? "compact" : "standard",
+    }) + unit;
+  const periodLabel = (n) => (dates ? dates[n] : utcHour(n)) + " UTC";
+  const hours = Array.from({ length: dates?.length || 24 }, (_, hour) => hour);
+  const selected =
+    entry.hours?.get(key) ??
+    columns.find(([, side]) => side.winners?.length)?.[1].winners[0].hour ??
+    (dates
+      ? hours.findLast((hour) => series.some((s) => s.bins.has(hour)))
+      : hours.find((hour) => series.some((s) => s.bins.has(hour)))) ??
+    0;
+
+  function point(s, hour) {
+    const bin = s.bins.get(hour);
+    const value = s.fixed ? s.value : bin?.value;
+    if (value == null)
+      return { value, detail: s.fixed ? "Unknown vendor price" : "No sample" };
+    const coverage = s.fixed
+      ? "fixed vendor price"
+      : dates
+        ? bin.count + (bin.count === 1 ? " sampled hour" : " sampled hours")
+        : bin.days + (bin.days === 1 ? " sampled day" : " sampled days");
+    return {
+      value,
+      detail: [money(value), coverage, s.best.get(hour)]
+        .filter(Boolean)
+        .join(" · "),
+    };
+  }
+  const bands = hours
+    .map((hour) => {
+      const bars = series
+        .map((s, i) => {
+          const { value, detail } = point(s, hour);
+          // Each series keeps its slot when one side of the basket has no quote.
+          const style =
+            s.fixed || value == null
+              ? "visibility:hidden"
+              : `height:${(100 * value) / ceiling}%`;
+          return `<span class="hour-bar series-${i}" data-detail="${esc(detail)}" style="${style}" ${s.best.has(hour) ? "data-best" : ""}></span>`;
+        })
+        .join("");
+      return `<div data-hour="${hour}" data-label="${periodLabel(hour)}" class="${hour === selected ? "inspected" : ""}">${bars}</div>`;
+    })
+    .join("");
+  const rules = series
+    .map((s, i) =>
+      s.fixed && s.value != null
+        ? `<span class="vendor-rule series-${i}" style="bottom:${(100 * s.value) / ceiling}%"></span>`
+        : "",
+    )
+    .join("");
+  const metrics = series
+    .map(
+      (s, i) =>
+        `<span class="hour-metric series-${i}${s.fixed ? " fixed" : ""}">${esc(s.label)} <strong data-metric>${esc(point(s, selected).detail)}</strong></span>`,
+    )
+    .join("");
+  const ticks = hours
+    .map(
+      (hour) =>
+        `<span>${dates ? (hour % 7 === 0 || hour === 27 ? dates[hour].slice(8) : "") : hour % 4 === 0 || hour === 23 ? String(hour).padStart(2, "0") : ""}</span>`,
+    )
+    .join("");
+  const title = dates
+    ? "Daily unit price"
+    : columns.length === 1
+      ? "Hourly unit price"
+      : "Hourly batch prices";
+  const bestKey = series.some((s) => s.best.size)
+    ? '<i class="best-key" aria-hidden="true"></i> Best hours · '
+    : "";
+  const label = periodLabel(selected);
+  const description = [
+    label,
+    ...series.map((s) => s.label + " " + point(s, selected).detail),
+  ].join(", ");
+  return `<figure class="hourly-chart" style="--chart-periods:${hours.length}" data-chart-key="${esc(key)}" data-chart-url="${esc(url)}">
+    <figcaption><strong>${title}</strong><span>${bestKey}${dates ? "Daily medians · UTC" : "28-day medians"}</span></figcaption>
+    <div class="hour-graph">
+      <div class="hour-y" aria-hidden="true"><span>${tick(ceiling)}</span><span>${tick(ceiling / 2)}</span><span>0</span></div>
+      <div class="hour-plot" aria-hidden="true">${bands}${rules}</div>
+      <div class="hour-x" aria-hidden="true">${ticks}</div>
+      <input class="hour-slider" type="range" min="0" max="${hours.length - 1}" step="1" value="${selected}"
+        aria-label="Inspect ${dates ? "day" : "hour"} in UTC" aria-valuetext="${esc(description)}">
+    </div>
+    <div class="hour-readout"><b data-hour-label>${label}</b>${metrics}</div>
+  </figure>`;
+}
+
+function bindHourlyCharts(container) {
+  function inspect(chart, hour) {
+    const column = chart.querySelector('[data-hour="' + hour + '"]');
+    if (!column) return;
+    chart.querySelector(".inspected")?.classList.remove("inspected");
+    column.classList.add("inspected");
+    const label = column.dataset.label;
+    chart.querySelector("[data-hour-label]").textContent = label;
+    const descriptions = [];
+    chart.querySelectorAll("[data-metric]").forEach((metric, i) => {
+      metric.textContent = column.children[i].dataset.detail;
+      descriptions.push(metric.parentElement.textContent);
+    });
+    const slider = chart.querySelector(".hour-slider");
+    slider.value = hour;
+    slider.setAttribute("aria-valuetext", [label, ...descriptions].join(", "));
+    const entry = timingCache.get(chart.dataset.chartUrl);
+    if (entry) (entry.hours ??= new Map()).set(chart.dataset.chartKey, hour);
+  }
+  function inspectColumn(event) {
+    const column = event.target.closest(".hour-plot [data-hour]");
+    if (column && !column.contains(event.relatedTarget)) {
+      inspect(column.closest(".hourly-chart"), Number(column.dataset.hour));
+    }
+  }
+  container.addEventListener("pointerover", inspectColumn);
+  container.addEventListener("click", inspectColumn);
+  container.addEventListener("input", (event) => {
+    if (event.target.matches(".hour-slider")) {
+      inspect(
+        event.target.closest(".hourly-chart"),
+        event.target.valueAsNumber,
+      );
+    }
+  });
+}
+
 function hourlyTable(columns) {
   const hours = new Set();
   const series = columns.map(
@@ -228,14 +391,7 @@ function hourlyTable(columns) {
   );
 }
 
-function timingPanel(item, route, c) {
-  const url = timingRequest(
-    item,
-    route,
-    c.batch,
-    route.percentileMode ? "percentile" : "",
-    prefs().floor || 0,
-  );
+function timingPanel(item, route, c, url) {
   const entry = timingCache.get(url);
   let result = "";
   if (entry?.data) {
@@ -246,6 +402,10 @@ function timingPanel(item, route, c) {
       entry.data,
       listingBook,
     );
+    const columns = [
+      ["Batch cost", buy],
+      ["Sale proceeds", sell],
+    ];
     const margin =
       buy.value != null && sell.value != null
         ? "<p>Projected batch margin at these hours, including postage · <strong>" +
@@ -253,26 +413,25 @@ function timingPanel(item, route, c) {
           "</strong></p>"
         : "";
     result =
+      hourlyChart(columns, url, routeKey(item, route)) +
       "<p>" +
       esc(timingText("Buy reagents / prepare craft", buy)) +
       "</p><p>" +
       esc(timingText("Sell", sell)) +
       "</p>" +
       margin +
-      hourlyTable([
-        ["Batch cost", buy],
-        ["Sale proceeds", sell],
-      ]) +
+      hourlyTable(columns) +
       '<p class="hint">Last 28 days, UTC. Each compared hour needs 3 sampled days. Auction proceeds use observed prices, expected yields, auction cut and sale reserve. ' +
       (route.percentileMode
         ? "Reagent budgets use the selected quantity percentile."
         : "Reagent budgets use historical unit prices.") +
       "</p>";
-  } else if (entry?.error) {
-    result = '<p role="status">Price history unavailable. Try again.</p>';
   }
+  if (entry?.error)
+    result +=
+      '<p role="status">Price history unavailable. Refresh to retry.</p>';
   return (
-    '<section><button data-history="' +
+    '<section class="history-panel"><button data-history="' +
     esc(url) +
     '"' +
     (entry?.loading ? " disabled" : "") +
@@ -281,7 +440,9 @@ function timingPanel(item, route, c) {
       ? "Loading price history…"
       : entry?.data
         ? "Refresh hourly comparison"
-        : "Compare crafting and selling hours") +
+        : entry?.error
+          ? "Retry price history"
+          : "Loading price history…") +
     "</button>" +
     result +
     "</section>"
@@ -297,19 +458,21 @@ function marketHistory(item) {
     const values = rows.map(([hour, unit]) => [hour, unit]);
     const low = bestHour(values, false),
       high = bestHour(values, true);
+    const columns = [["Unit price", low]];
     content =
+      hourlyChart(columns, url, "item/" + item.id, high) +
       "<p>" +
       esc(timingText("Lowest unit price", low, "per unit")) +
       "</p><p>" +
       esc(timingText("Highest unit price", high, "per unit")) +
       "</p>" +
-      hourlyTable([["Unit price", low]]) +
+      hourlyTable(columns) +
       '<p class="hint">Last 28 days, UTC. Each compared hour needs 3 sampled days.</p>';
   } else if (entry?.error) {
     content = "<p>Price history unavailable. Try again.</p>";
   }
   return (
-    '<section><button data-history="' +
+    '<section class="history-panel"><button data-history="' +
     url +
     '"' +
     (entry?.loading ? " disabled" : "") +
@@ -325,19 +488,32 @@ function marketHistory(item) {
   );
 }
 
-async function loadTiming(url) {
-  if (timingCache.get(url)?.loading) return;
-  timingCache.set(url, { loading: true });
-  render();
+async function loadTiming(key, initial = false) {
+  const previous = timingCache.get(key);
+  if (previous?.loading) return;
+  const entry = { ...previous, loading: true, error: false };
+  timingCache.set(key, entry);
+  if (!initial) render(true);
   try {
-    const res = await fetch(url, { cache: "no-store" });
-    if (!res.ok) throw Error("History unavailable");
-    const data = await res.json();
-    if (timingCache.size >= 40)
-      timingCache.delete(timingCache.keys().next().value);
-    timingCache.set(url, { data });
+    const items = {};
+    for (const url of key.split("|")) {
+      const response = await fetch(url, { cache: "no-store" });
+      if (!response.ok) throw Error("History unavailable");
+      const page = await response.json();
+      Object.assign(items, page.items);
+    }
+    entry.data = { items };
+    entry.fetchedAt = Date.now();
   } catch {
-    timingCache.set(url, { error: true });
+    entry.error = true;
+  } finally {
+    entry.loading = false;
+    if (timingCache.size > 40) {
+      const oldest = [...timingCache.keys()].find(
+        (k) => k !== key && !timingCache.get(k).loading,
+      );
+      if (oldest) timingCache.delete(oldest);
+    }
+    render(true);
   }
-  render();
 }
