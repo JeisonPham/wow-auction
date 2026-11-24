@@ -1,6 +1,11 @@
 **
 !Cargo.toml
 !Cargo.lock
+!build.rs
+!wasm/
+!wasm/Cargo.*
+!wasm/src/
+!wasm/src/**
 !src/
 !src/**
 !web/

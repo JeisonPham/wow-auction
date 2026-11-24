@@ -62,7 +62,7 @@ function routeMaterials(item, route, batch) {
     add(line.id, line.name, "Disenchant sale");
   return [...materials.values()].map((m) => ({
     ...m,
-    need: m.purchase ? m.purchase.quantity * batch : 1,
+    need: m.purchase ? AuctionMath.scalar.batch_units(m.purchase.quantity, batch) : 1,
   }));
 }
 
@@ -121,16 +121,11 @@ function materialCard(material, route, history, daily) {
 }
 
 function purchaseBreakdown(r, c) {
-  const amounts = r.inputs.map((l) =>
-    l.cost == null ? null : (l.purchase_budget ?? l.cost * c.batch),
-  );
-  const total = amounts.every((n) => n != null)
-    ? amounts.reduce((sum, n) => sum + n, 0)
-    : null;
+  const amounts = AuctionMath.call("breakdown", r.inputs, c.batch);
   const lines = r.inputs.map((l, j) => {
-    const share = total > 0 ? (100 * amounts[j]) / total : null;
-    return `<li><div class="cost-label"><span>${esc(l.name)} × ${(l.quantity * c.batch).toLocaleString()}</span>
-      <strong>${money(amounts[j])}${share != null ? " · " + Math.round(share) + "%" : ""}</strong></div>
+    const {cost, share} = amounts[j];
+    return `<li><div class="cost-label"><span>${esc(l.name)} × ${(AuctionMath.scalar.batch_units(l.quantity, c.batch)).toLocaleString()}</span>
+      <strong>${money(cost)}${share != null ? " · " + Math.round(share) + "%" : ""}</strong></div>
       ${share != null ? `<div class="cost-track"><i style="width:${share}%"></i></div>` : ""}
       <small>${esc(lineBasis(l, r))} · ${money(l.unit_cost)} each</small></li>`;
   });
@@ -153,7 +148,7 @@ function fullRoute(item, r) {
   const production = r.stages?.length ? pathSteps(r, c.batch) : [steps(r)];
   const expected = (r.outputs || []).map(
     (l) =>
-      `<li>${esc(l.name)} × ${(l.quantity * c.batch).toLocaleString(undefined, { maximumFractionDigits: 4 })} expected · ${money(l.unit_cost)} each</li>`,
+      `<li>${esc(l.name)} × ${(AuctionMath.scalar.batch_units(l.quantity, c.batch)).toLocaleString(undefined, { maximumFractionDigits: 4 })} expected · ${money(l.unit_cost)} each</li>`,
   );
   return {
     history,
@@ -164,11 +159,11 @@ function fullRoute(item, r) {
       ${metric("Batch cost", money(b.cost))}${metric("Sale proceeds", money(b.out))}
       ${metric("Batch time", duration(b.seconds))}${metric("Batch gold per hour", hourly(b.goldPerHour))}
     </dl>
-    <div class="route-actions">${isCraft(r) ? '<button class="sim-launch" aria-haspopup="dialog" data-sim-order>Estimate cost for a quantity</button>' + craftSimulationButton(r) : ""}<button data-copy>Copy Markdown</button></div>
+    <div class="route-actions">${isCraft(r) ? '<button class="sim-launch" aria-haspopup="dialog" data-sim-order>Estimate cost for a quantity</button><button class="sim-launch" aria-haspopup="dialog" data-optimize>Find optimal craft quantity</button>' + craftSimulationButton(r) : ""}<button data-copy>Copy Markdown</button></div>
     <div class="route-columns">
       <section class="route-panel"><h2>Production plan</h2>
         <ol class="production-list">${production.map((s) => "<li>" + esc(s) + "</li>").join("")}</ol>
-        ${isCraft(r) ? `<p>Planned output · ${(r.quantity * c.batch).toLocaleString()} × ${esc(item.name)}${r.quantity_min != null && r.quantity_max !== r.quantity_min ? " · " + r.quantity_min + "–" + r.quantity_max + " per craft" : ""}</p>` : ""}
+        ${isCraft(r) ? `<p>Planned output · ${(AuctionMath.scalar.batch_units(r.quantity, c.batch)).toLocaleString()} × ${esc(item.name)}${r.quantity_min != null && r.quantity_max !== r.quantity_min ? " · " + r.quantity_min + "–" + r.quantity_max + " per craft" : ""}</p>` : ""}
         ${expected.length ? "<h3>Expected disenchant materials</h3><ul>" + expected.join("") + "</ul>" : ""}
         ${r.expected_inputs || destroys(r) ? '<p class="hint">Disenchant yields are averages. ' + esc(report.catalog?.disenchant_source || "") + "</p>" : ""}
         <h3>Character requirements</h3>

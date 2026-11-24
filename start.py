@@ -153,8 +153,8 @@ def binary_is_current(binary, root):
     if not binary.is_file():
         return False
     built = binary.stat().st_mtime_ns
-    sources = [root / "Cargo.toml", root / "Cargo.lock"]
-    for folder in (root / "src", root / "web"):
+    sources = [root / name for name in ("Cargo.toml", "Cargo.lock", "build.rs", "wasm/Cargo.toml", "wasm/Cargo.lock")]
+    for folder in (root / "src", root / "web", root / "wasm/src"):
         sources.extend(p for p in folder.rglob("*") if p.is_file())
     return all(p.stat().st_mtime_ns <= built for p in sources)
 

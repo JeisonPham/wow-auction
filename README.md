@@ -239,6 +239,12 @@ For a craft, set **Min. pieces per craft** and **Max. pieces per craft**. The si
 
 One sampled price per reagent applies to the whole batch. For each trial the simulator values the actual number of pieces at the route's unit sale value, including auction deductions where applicable. It also adjusts return-mail stacks and the time for disenchanting the final pieces. The results show the batch output range, profit range, chance of positive profit and mean batch gold/hour when the necessary prices and timing are available. Supply limits and disenchant material averages follow the displayed plan. The route table retains its planning quantity.
 
+### Find the optimal number to craft
+
+Open a craft route and choose **Find optimal craft quantity**. Enter **Maximum crafts** (1–10,000, default 100) and optionally a **Gold budget**, then select **Find best quantity**. The recommended order shows whole crafts, expected finished pieces, the possible yield range, purchase cost including configured postage, and projected net profit. Zero crafts is a valid recommendation.
+
+The optimizer checks whole-craft sizes against the newest eligible listing snapshot for each raw reagent, using whole auction stacks, optional fixed-price vendor purchases and the route’s net sale value. It maximizes projected total profit within the budget, stock and craft limits. A tie favors fewer crafts. Mixed stacks can make it profitable to buy extra units. For unusually large mixed-stack searches, the optimizer prompts for a smaller craft limit. Variable-yield recipes use the mean of the inclusive yield range; configured return postage uses the projected output. Chained routes use the existing plan’s raw inputs and expected intermediate yields. An auction exit assumes the entire output sells at the modeled price. For a distribution of reagent spending and stock shortages, use **Estimate cost for a quantity**.
+
 ### Size a craft order with the Kelly criterion
 
 Open **Simulate craft batch** on a route with a sale value, enter your available **Starting gold for Kelly sizing**, and run the simulation. **Suggested spend at current quotes** shows the cost of the recommended whole batches and how much gold you would keep. **Full Kelly target** shows the percentage and gold amount before rounding and stock limits. A simulation batch of one lets you size the order in individual crafts.
@@ -250,16 +256,21 @@ For the whole-batch recommendation, the scanner compares the feasible batch coun
 ## Verify the build
 
 ```sh
+rustup target add wasm32-unknown-unknown
 cargo test --locked
 cargo build --locked
 python3 -m unittest discover -s tests -v
 python3 -m unittest discover -s client -v
 node tests/price-simulation.cjs
 node tests/shopping.cjs
+node tests/optimal-order.cjs
+node tests/history.cjs
 lua addon/tests/scanner.lua
 lua addon/tests/opportunities.lua
 cargo build --release --locked
 ```
+
+The native server build compiles the Rust calculation crate in `wasm/` for `wasm32-unknown-unknown` in release mode and embeds the resulting module. Both Dockerfiles install the Rust target. The dashboard loads `/auction.wasm` from the same server. JavaScript renders the interface and handles browser events and requests. The simulation and optimizer workers run independent instances of the same compiled module. Native builds require the Rust target shown above. After building the server, run `node tests/price-simulation.cjs`, `node tests/optimal-order.cjs`, `node tests/shopping.cjs` and `node tests/history.cjs` to check the compiled module.
 
 The network integration test uses a temporary data directory and an ephemeral loopback port. It skips when the environment forbids opening a listener. `pandoc-lua` can also run the Lua fixture. Run `cargo test --locked live_forever_market -- --ignored` for a live public-feed check. The optional dashboard interaction fixture uses Node and jsdom 16.7, and runs with `node tests/dashboard.cjs` when jsdom is available.
 

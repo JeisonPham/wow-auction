@@ -378,7 +378,12 @@ fn handle(mut r: Request, c: &Config, state: &Mutex<State>) {
     if method != "GET" && method != "HEAD" {
         return fail(r, 405, "unsupported method");
     }
+    if path == "/auction.wasm" {
+        static MODULE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/auction.wasm"));
+        return respond(r, 200, "application/wasm", Arc::from(MODULE), None);
+    }
     let asset = match path.as_str() {
+        "/calculations.js" => Some(("text/javascript", include_str!("../web/calculations.js"))),
         "/" | "/route" => Some((
             "text/html; charset=utf-8",
             include_str!("../web/index.html"),

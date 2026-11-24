@@ -222,7 +222,7 @@ const routeLabel = (r) => (r.stages?.length ? "Chained · " : "") + exitLabel(r)
 function pathSteps(r, batch) {
   if (!r.stages?.length) return [];
   const amount = (n) =>
-    (n * batch).toLocaleString(undefined, { maximumFractionDigits: 4 });
+    (AuctionMath.scalar.batch_units(n, batch)).toLocaleString(undefined, { maximumFractionDigits: 4 });
   const mats = (list) =>
     list.map((m) => amount(m.quantity) + " × " + m.name).join(", ");
   const result = r.stages.map((s) => {
@@ -269,28 +269,16 @@ function pathSteps(r, batch) {
   return result;
 }
 function trainingPlans(rows) {
-  const best = new Map();
   const byHour = prefs().sort === "gold_per_hour";
-  const score = (r) => (byHour ? r.timing?.gold_per_hour : r.profit);
-  for (const { i, r } of rows) {
-    if (
-      !isCraft(r) ||
-      r.ready !== false ||
-      !(r.profit > 0) ||
-      !Number.isFinite(score(r)) ||
-      r.stock === "insufficient"
-    )
-      continue;
-    const key = r.profession || "Unknown profession";
-    if (!best.has(key) || score(r) > score(best.get(key).r))
-      best.set(key, { i, r });
-  }
-  const list = [...best.values()].sort((a, b) => score(b.r) - score(a.r));
-  const trainingCopper = Math.ceil(Number(prefs().trainingCost) * 10000);
+  const list = rows.length ? AuctionMath.call("training", rows.map(({r}) => ({
+    kind:r.kind, profit:r.profit, score:byHour ? r.timing?.gold_per_hour : r.profit,
+    ready:r.ready, stock:r.stock, profession:r.profession,
+  }))).map(index => rows[index]) : [];
+  const trainingGold = Number(prefs().trainingCost);
   const payback = (profit) =>
-    trainingCopper > 0 && Number.isFinite(trainingCopper)
+    trainingGold > 0 && Number.isFinite(trainingGold)
       ? " · " +
-        Math.ceil(trainingCopper / profit).toLocaleString() +
+        AuctionMath.scalar.training_runs(trainingGold, profit).toLocaleString() +
         " profitable crafts to recover your budget"
       : "";
   const catalog = report?.catalog;
@@ -533,7 +521,7 @@ function render(preserveDraft = false) {
             money(
               r.shopping?.cost == null
                 ? r.cost
-                : r.shopping.cost / calc(i, r).batch,
+                : AuctionMath.scalar.unit_value(r.shopping.cost, calc(i, r).batch),
             ),
             '<span class="' +
               profitability(r.profit) +
@@ -685,7 +673,7 @@ function craftYield(item, route, c) {
     base: route.quantity,
     netPerUnit:
       route.net_unit_value ??
-      (route.proceeds == null ? null : route.proceeds / route.quantity),
+      (route.proceeds == null ? null : AuctionMath.scalar.unit_value(route.proceeds, route.quantity)),
     timing: route.timing,
     returnStack:
       c.mail && c.back && !destroys(route) ? item.max_stack || c.stack : null,
@@ -696,8 +684,10 @@ function openSimulation(name, model, shortages, at) {
   clearSimulation();
   simulationModel = model;
   $("sim-title").textContent =
-    name + (model.order ? " · Crafting cost" : model.unitOnly ? " · Unit price" : " · Craft batch");
-  $("sim-context").textContent = model.order
+    name + (model.optimize ? " · Optimal craft quantity" : model.order ? " · Crafting cost" : model.unitOnly ? " · Unit price" : " · Craft batch");
+  $("sim-context").textContent = model.optimize
+    ? "Find the whole-craft count with the highest projected total profit using current reagent listings, vendor prices and the route’s mailing settings."
+    : model.order
     ? "Enter the number of finished pieces you want. Each trial rolls the output of each cast until it reaches your target. Every whole number in the yield range is equally likely." +
       (model.chained ? " Intermediate steps use the route’s planned inputs and expected yields." : "")
     : model.unitOnly
@@ -726,14 +716,24 @@ function openSimulation(name, model, shortages, at) {
       ? (saved.yieldRanges?.[model.yield.key]?.[bound] ?? model.yield[bound])
       : "";
   }
-  $("sim-target-label").hidden = $("sim-target").disabled = !model.order;
-  $("sim-stock-spread-label").hidden = $("sim-stock-spread").disabled = !model.order;
+  $("sim-limit-label").hidden = $("sim-limit").disabled = !model.optimize;
+  $("sim-budget-label").hidden = $("sim-budget").disabled = !model.optimize;
+  $("sim-limit").value = saved.optimizer?.limit ?? 100;
+  $("sim-budget").value = saved.optimizer?.budget ?? "";
+  for (const id of ["sim-volatility", "sim-trials"]) {
+    $(id).closest("label").hidden = $(id).disabled = !!model.optimize;
+  }
+  $("sim-form").querySelector("button").textContent = model.optimize ? "Find best quantity" : "Run simulation";
+  $("sim-target-label").hidden = $("sim-target").disabled = !model.order || !!model.optimize;
+  $("sim-stock-spread-label").hidden = $("sim-stock-spread").disabled = !model.order || !!model.optimize;
   $("sim-target").value = model.order ? model.target : "";
   $("sim-stock-spread").value = saved.simulation?.stockSpread ?? 10;
   $("sim-columns").innerHTML = (model.order
     ? ["Reagent", "Per cast", "Auction listings", "Vendor / unit"]
     : ["Item", "Quantity", "Quote per unit", "Source"]).map(label => "<th>" + label + "</th>").join("");
-  $("sim-assumptions").textContent = model.order
+  $("sim-assumptions").textContent = model.optimize
+    ? "Output uses the average of the recipe’s yield range. Sale proceeds assume the entire output sells at the route’s net value per piece. Equal-profit orders favor fewer crafts."
+    : model.order
     ? "Prices and listed stack counts vary independently around the newest fresh in-game or Blizzard snapshot. Each reagent gets its own normal price and stock draws. Purchases use whole stacks, cheapest per unit first, and can use a vendor at a fixed price. Reagent cost excludes postage."
     : defaultSimAssumptions;
   $("sim-inputs").innerHTML = model.order ? orderInputTable(model.lines) : model.lines
@@ -742,7 +742,7 @@ function openSimulation(name, model, shortages, at) {
         "<tr><td>" +
         esc(line.name) +
         "</td><td>" +
-        (line.quantity * model.batch).toLocaleString() +
+        (AuctionMath.scalar.batch_units(line.quantity, model.batch)).toLocaleString() +
         "</td><td>" +
         money(line.unit_cost) +
         "</td><td>" +
@@ -768,7 +768,8 @@ function openSimulation(name, model, shortages, at) {
   $("sim-gold-label").hidden = $("sim-gold").disabled = !canSize;
   $("sim-gold").value = canSize ? (saved.simulation?.gold ?? "") : "";
   $("simulation").showModal();
-  if (model.order) $("sim-target").focus();
+  if (model.optimize) $("sim-limit").focus();
+  else if (model.order) $("sim-target").focus();
 }
 function simulationStats(stats) {
   return (
@@ -820,6 +821,12 @@ function kellyResults(k, batch) {
   );
 }
 function showSimulationResults(result, trials) {
+  if (simulationModel.optimize) {
+    $("sim-status").textContent = "Craft sizes compared.";
+    $("sim-result").innerHTML = optimizationResults(result);
+    $("sim-status").scrollIntoView?.({ block: "start" });
+    return;
+  }
   $("sim-status").textContent = trials.toLocaleString() + " trials completed.";
   if (simulationModel.order) {
     $("sim-result").innerHTML = orderResults(result, trials, simulationModel.lines);
@@ -854,7 +861,7 @@ function showSimulationResults(result, trials) {
         "Middle 90% of batch profit",
         money(result.profit.p5) + " – " + money(result.profit.p95),
       ],
-      ["Trials with positive profit", (100 * profitChance).toFixed(1) + "%"],
+      ["Trials with positive profit", result.profitPercent.toFixed(1) + "%"],
     );
   }
   if (result.goldPerHour != null)
@@ -866,26 +873,23 @@ function showSimulationResults(result, trials) {
       : "") +
     simulationStats(stats) + simulationDistribution(result);
 }
-function simulationDistribution({ low, high, bins, chartMetric }) {
-  const peak = Math.max(...bins);
+function simulationDistribution({ low, high, bars, chartMetric }) {
   return low === high
       ? ""
       : "<p>" +
         chartMetric +
         " distribution</p>" +
         '<div class="sim-bars" aria-hidden="true">' +
-        bins
-          .map((count, idx) => {
-            const width = (high - low) / bins.length;
-            const range =
-              money(low + idx * width) + " – " + money(low + (idx + 1) * width);
+        bars
+          .map(({count, from, to, height}) => {
+            const range = money(from) + " – " + money(to);
             return (
               '<span title="' +
               range +
               " · " +
               count.toLocaleString() +
               ' trials" style="height:' +
-              (100 * count) / peak +
+              height +
               '%"></span>'
             );
           })
@@ -925,7 +929,7 @@ $("sim-form").onsubmit = async (event) => {
   }
   const gold = $("sim-gold");
   if (!gold.disabled && gold.value !== "") {
-    model.bankroll = Math.round(gold.valueAsNumber * 10000);
+    model.bankroll = AuctionMath.scalar.gold_to_copper(gold.valueAsNumber);
     if (!Number.isSafeInteger(model.bankroll) || model.bankroll < 0) {
       $("sim-status").textContent =
         "Starting gold exceeds the supported copper range.";
@@ -933,7 +937,16 @@ $("sim-form").onsubmit = async (event) => {
     }
   }
   saved.simulation = { ...saved.simulation, volatility, trials };
-  if (model.order) {
+  if (model.optimize) {
+    model.limit = $("sim-limit").valueAsNumber;
+    const budget = $("sim-budget");
+    model.bankroll = budget.value === "" ? null : AuctionMath.scalar.gold_to_copper(budget.valueAsNumber);
+    if (model.bankroll != null && !Number.isSafeInteger(model.bankroll)) {
+      $("sim-status").textContent = "Gold budget exceeds the supported range.";
+      return;
+    }
+    saved.optimizer = {limit: model.limit, budget: budget.value};
+  } else if (model.order) {
     model.target = $("sim-target").valueAsNumber;
     model.stockSpread = $("sim-stock-spread").valueAsNumber;
     saved.simulation.stockSpread = model.stockSpread;
@@ -957,7 +970,7 @@ $("sim-form").onsubmit = async (event) => {
     }
     if (request.signal.aborted) return;
   }
-  $("sim-status").textContent = "Running simulation…";
+  $("sim-status").textContent = model.optimize ? "Comparing craft sizes…" : "Running simulation…";
   try {
     const worker = new Worker("/price-simulation.js");
     simulationWorker = worker;
@@ -973,7 +986,7 @@ $("sim-form").onsubmit = async (event) => {
       $("sim-status").textContent =
         "Simulation interrupted. Run it again to retry.";
     };
-    worker.postMessage({ model, trials, volatility });
+    worker.postMessage({ model, trials, volatility, module: AuctionMath.module });
   } catch {
     clearSimulation();
     $("sim-status").textContent =
@@ -1003,114 +1016,32 @@ function calc(i, r) {
     batch: validBatch(settings?.batch) ? settings.batch : saved.batchSize,
   };
 }
+let routeQuotes = new WeakMap();
 function pricedRoute(i, r) {
   const basis = prefs().pricing;
   if (view() === "market" || !["listings", "percentile"].includes(basis)) return r;
   const c = calc(i, r);
-  const postage = summary(i, r, c).postage;
-  if (basis === "percentile") {
-    const cutoff = Math.floor(Date.now() / 1000) - (report.depth_max_age ?? 21600);
-    const floor = Number(prefs().floor || 0);
-    const inputs = r.inputs.map((line) =>
-      percentileInput(line, listingBook.get(line.id), c.batch, floor, cutoff, isCraft(r)));
-    const sum = inputs.every((l) => l.purchase_budget != null)
-      ? inputs.reduce((n, l) => n + l.purchase_budget, 0) : null;
-    const budget = Number.isSafeInteger(sum) ? sum : null;
-    const net = budget != null && r.proceeds != null ? r.proceeds * c.batch - budget - postage : null;
-    const profit = Number.isSafeInteger(net) ? net / c.batch : null;
-    const short = inputs.some((l) => l.source !== "vendor" && l.quote_status === "insufficient");
-    return { ...r, percentileMode: true, inputs, purchaseBudget: budget,
-      cost: budget == null ? null : budget / c.batch, profit,
-      timing: routeTiming(r.timing, profit),
-      stock: short ? "insufficient" : profit == null ? "unknown" : "estimated" };
-  }
-  const cutoff =
-    Math.floor(Date.now() / 1000) - (report?.shopping_max_age ?? 900);
-  const q = quoteShoppingBatch(i, r, c, postage, listingBook, cutoff);
-  const profit = q.profit == null ? null : q.profit / c.batch;
-  return {
-    ...r,
-    baseRoute: r,
-    shopping: q,
-    inputs: q.inputs,
-    outputs: q.outputs,
-    cost: q.cost == null ? null : (q.cost - postage) / c.batch,
-    proceeds: q.out == null ? null : q.out / c.batch,
-    net_unit_value: q.netUnit,
-    profit,
-    timing: routeTiming(r.timing, profit),
-    stock: q.short ? "insufficient" : q.issue ? "unknown" : "verified",
-  };
-}
-function routeTiming(timing, profit) {
-  return timing && {
-    ...timing, gold_per_hour: profit == null || !timing.repeat_seconds
-      ? null : (profit * 0.36) / timing.repeat_seconds,
-  };
+  const age = basis === "percentile" ? (report.depth_max_age ?? 21600) : (report.shopping_max_age ?? 900);
+  const cutoff = AuctionMath.scalar.quote_cutoff(Date.now(), age);
+  const epoch = AuctionMath.scalar.freshness_epoch(cutoff, basis === "percentile");
+  const key = JSON.stringify([basis, c, prefs().floor, epoch]);
+  const cached = routeQuotes.get(r);
+  if (cached?.key === key) return cached.route;
+  const patch = AuctionMath.call("priceRoute", itemForPricing(i), routeForPricing(r), c, basis, Number(prefs().floor || 0), cutoff);
+  const route = {...r, ...patch, baseRoute:r};
+  routeQuotes.set(r, {key, route});
+  return route;
 }
 function basisText(r) {
   if (r.percentileMode) return "Quantity percentile budgets each reagent at its selected unit price.";
   return r.shopping ? "Current listing prices for this batch." : "Latest available prices. In-game prices are unit-weighted averages.";
 }
 function summary(i, r, c) {
-  const stacks = r.inputs.reduce(
-    (sum, l) =>
-      sum + Math.ceil((l.quantity * c.batch) / (l.max_stack || c.stack)),
-    0,
-  );
-  const back =
-    c.mail && c.back
-      ? isCraft(r) && !destroys(r)
-        ? Math.ceil((r.quantity * c.batch) / (i.max_stack || c.stack))
-        : destroys(r)
-          ? c.returns
-          : 0
-      : 0;
-  const postage = c.mail ? (stacks + back) * c.post : 0;
-  const cost = r.shopping
-      ? r.shopping.cost
-      : r.cost == null
-        ? null
-        : (r.purchaseBudget ?? r.cost * c.batch) + postage,
-    out = r.shopping
-      ? r.shopping.out
-      : r.proceeds == null
-        ? null
-        : r.proceeds * c.batch;
-  const shortages = r.inputs
-    .filter(
-      (l) =>
-        l.source !== "vendor" &&
-        l.listed_units != null &&
-        l.quantity * c.batch > l.listed_units,
-    )
-    .map(
-      (l) =>
-        l.name +
-        " needs " +
-        l.quantity * c.batch +
-        (r.percentileMode ? ", listed " : ", checked ") +
-        l.listed_units,
-    );
-  const net = cost == null || out == null ? null : out - cost;
-  const seconds = r.timing
-    ? r.timing.elapsed_seconds + (c.batch - 1) * r.timing.repeat_seconds
-    : null;
-  return {
-    seconds,
-    active: r.timing ? r.timing.active_seconds * c.batch : null,
-    goldPerHour:
-      net != null && seconds > 0 ? ((net / 10000) * 3600) / seconds : null,
-    postage,
-    cost,
-    out,
-    net,
-    shortages,
-  };
+  return AuctionMath.call("summary", itemForPricing(i), routeForPricing(r), c);
 }
 function batchTiming(r, b) {
   if (!r.timing) return "";
-  const wait = Math.max(0, Math.round((b.seconds - b.active) * 10) / 10);
+  const wait = b.wait;
   return (
     "Estimated batch time " +
     duration(b.seconds) +
@@ -1167,13 +1098,13 @@ function instructions(i, r, c) {
         "- " +
         l.name +
         " × " +
-        l.quantity * c.batch +
+        AuctionMath.scalar.batch_units(l.quantity, c.batch) +
         " (" +
         lineBasis(l, r) +
         ", " +
         money(l.unit_cost) +
         " each, " +
-        money(l.cost == null ? null : l.cost * c.batch) +
+        money(l.cost == null ? null : AuctionMath.scalar.batch_units(l.cost, c.batch)) +
         " total)",
     ),
     ...(r.outputs || []).map(
@@ -1181,7 +1112,7 @@ function instructions(i, r, c) {
         "- Expected " +
         l.name +
         " × " +
-        l.quantity * c.batch +
+        AuctionMath.scalar.batch_units(l.quantity, c.batch) +
         " (" +
         lineBasis(l, r) +
         ", " +
@@ -1270,7 +1201,7 @@ function shoppingPanel(r, c, input) {
           " · max " +
           money(o.cap) +
           " each · max spend " +
-          money(o.cap * o.units) +
+          money(AuctionMath.scalar.batch_units(o.cap, o.units)) +
           (o.available < o.units
             ? " · Only " + o.available + " units scanned at or below ceiling"
             : "") +
@@ -1331,9 +1262,11 @@ main.onclick = async (e) => {
       [],
       item.estimate_at,
     );
-  } else if (btn.hasAttribute("data-sim-order")) {
+  } else if (btn.hasAttribute("data-sim-order") || btn.hasAttribute("data-optimize")) {
     const { i, r } = rows[Number(btn.closest(".route").dataset.idx)];
-    openSimulation(i.name, craftOrderModel(i, r, calc(i, r)), [], report.generated_at);
+    const model = craftOrderModel(i, r, calc(i, r));
+    model.optimize = btn.hasAttribute("data-optimize");
+    openSimulation(i.name, model, [], report.generated_at);
   } else if (btn.hasAttribute("data-sim-craft")) {
     const el = btn.closest(".route");
     const { i, r } = rows[Number(el.dataset.idx)];
@@ -1441,14 +1374,17 @@ async function refresh() {
   if (busy) return;
   busy = true;
   try {
+    await AuctionMath.load();
     const res = await fetch("/api/report", {
       headers: etag ? { "If-None-Match": etag } : {},
       cache: "no-store",
     });
     if (res.status !== 304) {
       if (!res.ok) throw Error("HTTP " + res.status);
-      report = await res.json();
-      listingBook = indexListings(report.items);
+      const next = await res.json();
+      listingBook = indexListings(next.items);
+      routeQuotes = new WeakMap();
+      report = next;
       etag = res.headers.get("etag");
     }
     offline = "";

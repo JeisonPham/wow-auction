@@ -2,9 +2,9 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const vm = require("node:vm");
 const { timingProfile, bestHour, hourlyChart } = vm.runInNewContext(
-  fs.readFileSync("web/history.js", "utf8") +
+  fs.readFileSync("web/shopping.js", "utf8") + fs.readFileSync("web/history.js", "utf8") +
     ';timingCache.set("fixture", {});({timingProfile,bestHour,hourlyChart})',
-  {money: n => n + "c", esc: String},
+  {money: n => n + "c", esc: String, AuctionMath: require("./wasm.cjs").engine},
 );
 const day = 86400;
 const rows = (morning, evening, n = 4) =>

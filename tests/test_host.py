@@ -82,6 +82,8 @@ class HostTests(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertIn(b'id="routePage"', html)
         self.assertIn(b'fullRoute', self.req("/route.js")[1])
+        code, wasm, headers = self.req("/auction.wasm")
+        self.assertEqual((code, wasm[:4], headers.get_content_type()), (200, b'\x00asm', "application/wasm"))
         self.assertIn(b'craftOrderModel', self.req("/craft-order.js")[1])
         self.assertEqual(self.req("/api/scan-queue")[0], 401)
         self.assertEqual(self.req("/api/scan-queue", token=self.token)[0], 503)
@@ -140,7 +142,7 @@ class HostTests(unittest.TestCase):
         r = json.loads(data)
         self.assertEqual(next(i["lots"] for i in r["items"] if i["id"] == 1001), [[2, 11, 2]])
         self.assertIn(b"/shopping.js", self.req("/")[1])
-        self.assertIn(b"quoteShoppingBatch", self.req("/shopping.js")[1])
+        self.assertIn(b'AuctionMath.call("register"', self.req("/shopping.js")[1])
         self.assertIn(1001, r["scan_queue"])
         self.assertEqual(
             next(

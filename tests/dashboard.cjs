@@ -119,7 +119,11 @@ let fail = false,
 const historicDay = (Math.floor(at / 86400) - 4) * 86400;
 let historyHits = 0;
 let orderBook = {1001: {source: "Blizzard Auction House", observed_at: at, available: 7, lots: [[1, 2, 4], [3, 15, 1]]}};
+w.TextEncoder = TextEncoder;
+w.TextDecoder = TextDecoder;
+w.WebAssembly = WebAssembly;
 w.fetch = async (url) => {
+  if (url === "/auction.wasm") return new Response(require("./wasm.cjs").bytes, {headers:{"Content-Type":"application/wasm"}});
   if (url === "/api/reagent-listings?items=1001") {
     return {ok:true, json:async () => ({items:orderBook})};
   }
@@ -177,7 +181,7 @@ w.Worker = class {
     this.thread = new Worker(
       'const {parentPort} = require("node:worker_threads");' +
         "const self = {postMessage: value => parentPort.postMessage(value)};\n" +
-        fs.readFileSync("web/shopping.js", "utf8") + "\n" +
+        "const importScripts = path => require('node:vm').runInThisContext(require('node:fs').readFileSync('web' + path, 'utf8'));\n" +
         fs.readFileSync("web" + url, "utf8") +
         '\nparentPort.on("message", data => self.onmessage({data}));',
       { eval: true },
@@ -193,7 +197,7 @@ w.Worker = class {
   }
 };
 w.eval(
-  ["web/shopping.js", "web/history.js", "web/route.js", "web/craft-order.js", "web/app.js"]
+  ["web/calculations.js", "web/shopping.js", "web/history.js", "web/route.js", "web/craft-order.js", "web/app.js"]
     .map((file) => fs.readFileSync(file, "utf8"))
     .join("\n"),
 );
@@ -221,7 +225,7 @@ async function runSimulation() {
   return d.querySelector("#sim-result").textContent;
 }
 (async () => {
-  await wait();
+  for(let i=0;i<200 && !d.querySelector("#body>tr");i++) await wait();
   assert.equal(d.querySelector("#batchSizeLabel").hidden, true);
   assert.equal(d.querySelector("#profitabilityLabel").hidden, true);
   assert.equal(d.querySelectorAll("#body>tr").length, 40);
@@ -389,6 +393,16 @@ async function runSimulation() {
   assert.match(d.querySelector("#sim-inputs").textContent, /7 units · Blizzard Auction House/);
   d.querySelector("#sim-target").value = "3";
   assert.match(await runSimulation(), /No trial could fill this order/);
+  dialog.close();
+  d.querySelector("[data-optimize]").click();
+  assert.equal(d.querySelector("#sim-trials").disabled, true);
+  d.querySelector("#sim-budget").value = "0.0040"; // Ore and postage fit one cast.
+  d.querySelector("#sim-form button").click();
+  for (let n=0;n<300 && !d.querySelector("#sim-result dl");n++) await wait();
+  assert.match(d.querySelector("#sim-result").textContent, /Crafts1Finished pieces1/);
+  assert.match(d.querySelector("#sim-result").textContent, /Gold budget/);
+  dialog.close();
+  d.querySelector("[data-sim-order]").click();
   orderBook = {1001: null};
   d.querySelector("#sim-form button").click();
   await wait();

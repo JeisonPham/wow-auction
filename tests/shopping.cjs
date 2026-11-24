@@ -1,10 +1,10 @@
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const vm = require("node:vm");
-const { indexListings, quoteShoppingBatch, quoteStacks, percentilePurchase, percentileInput } = vm.runInNewContext(
-  fs.readFileSync("web/shopping.js", "utf8") +
-    ";({indexListings, quoteShoppingBatch, quoteStacks, percentilePurchase, percentileInput})",
-);
+const {engine} = require("./wasm.cjs");
+const indexListings = items => engine.call("register", items);
+const quoteShoppingBatch = (i,r,c,p,book,cutoff) => engine.call("shopping",i,r,c,p,cutoff);
+const quoteStacks = (...a) => engine.call("quoteStacks", ...a);
+const percentilePurchase = (...a) => engine.call("percentile", ...a);
+const percentileInput = (...a) => engine.call("input", ...a);
 const ore = {
   id: 1,
   name: "Ore",

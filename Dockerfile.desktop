@@ -1,6 +1,8 @@
 FROM rust:1.93.1-trixie AS build
 WORKDIR /src
-COPY Cargo.toml Cargo.lock ./
+RUN rustup target add wasm32-unknown-unknown
+COPY Cargo.toml Cargo.lock build.rs ./
+COPY wasm ./wasm
 COPY src ./src
 COPY web ./web
 RUN cargo build --locked --release

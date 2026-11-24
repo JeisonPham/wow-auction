@@ -1,126 +1,14 @@
 // Each hourly sample is [UTC hour start, observed unit price, budget for the requested quantity].
 const timingCache = new Map();
-function median(values) {
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
-}
-
 function bestHour(samples, highest) {
-  const bins = Array.from({ length: 24 }, () => []);
-  for (const [hour, value] of samples) bins[(hour / 3600) % 24].push(value);
-  const sampled = bins.flatMap((values, hour) =>
-    values.length ? [{ hour, days: values.length, value: median(values) }] : [],
-  );
-  const eligible = sampled.filter((bin) => bin.days >= 3);
-  if (eligible.length < 2)
-    return { state: "collecting", compared: eligible.length, sampled };
-  const best = (highest ? Math.max : Math.min)(
-    ...eligible.map((bin) => bin.value),
-  );
-  return {
-    state: "ready",
-    value: best,
-    compared: eligible.length,
-    sampled,
-    winners: eligible.filter((bin) => bin.value === best),
-  };
+  return AuctionMath.call("bestHour", samples, highest);
 }
-
-function timingProfile(item, route, batch, history, book) {
-  const series = new Map(),
-    hours = new Set(),
-    quoted = new Set();
-  for (const [id, rows] of Object.entries(history.items)) {
-    series.set(
-      Number(id),
-      new Map(
-        rows.map(([hour, unit, budget]) => {
-          hours.add(hour);
-          if (unit != null) quoted.add(Number(id));
-          return [hour, { unit, budget }];
-        }),
-      ),
-    );
-  }
-  const craft = route.kind.startsWith("craft");
-  // An unlimited vendor ingredient supplies a fixed alternative each hour. Use only
-  // hours with a real market observation for every auction-dependent ingredient.
-  const lines = route.inputs.map((line) => {
-    const entry = book.get(line.id);
-    const vendor = craft
-      ? (entry?.vendor_buy ??
-        (line.source === "vendor" ? line.unit_cost : null))
-      : null;
-    const fixed =
-      vendor != null && (entry?.auctionable === false || !quoted.has(line.id));
-    return {
-      id: line.id,
-      vendorCost: vendor == null ? null : vendor * line.quantity * batch,
-      fixed,
-      bound: line.source === "bound" || entry?.auctionable === false,
-    };
-  });
-  const inputsFixed = lines.every((line) => line.fixed);
-  const fixedSpend = lines.reduce(
-    (sum, line) => sum + (line.vendorCost ?? 0),
-    0,
-  );
-  const vendorSale = ["craft", "vendor"].includes(route.kind);
-  const outputs =
-    route.kind === "craft_auction"
-      ? [{ id: item.id, quantity: route.quantity }]
-      : route.outputs || [];
-  const costs = [],
-    sales = [];
-  for (const hour of hours) {
-    let cost = 0;
-    for (const line of lines) {
-      if (line.fixed) {
-        cost += line.vendorCost;
-        continue;
-      }
-      const quote = series.get(line.id)?.get(hour);
-      if (!quote || line.bound) {
-        cost = null;
-        break;
-      }
-      const spend =
-        quote.budget == null
-          ? line.vendorCost
-          : Math.min(quote.budget, line.vendorCost ?? Infinity);
-      if (spend == null) {
-        cost = null;
-        break;
-      }
-      cost += Math.ceil(spend);
-    }
-    if (Number.isSafeInteger(cost)) costs.push([hour, cost]);
-    if (!vendorSale && outputs.length) {
-      let gross = 0;
-      for (const out of outputs) {
-        const unit = series.get(out.id)?.get(hour)?.unit;
-        if (unit == null) {
-          gross = null;
-          break;
-        }
-        gross += unit * out.quantity;
-      }
-      if (gross != null)
-        sales.push([hour, Math.floor((gross * 323) / 400) * batch]);
-    }
-  }
-  return {
-    buy: inputsFixed
-      ? { state: "fixed", value: fixedSpend }
-      : bestHour(costs, false),
-    sell: vendorSale
-      ? {
-          state: "fixed",
-          value: route.proceeds == null ? null : route.proceeds * batch,
-        }
-      : bestHour(sales, true),
-  };
+function timingProfile(item, route, batch, history, book, postage = 0) {
+  const vendors = Object.fromEntries(route.inputs.map(l => {
+    const entry = book.get(l.id);
+    return [l.id, {vendor_buy: entry?.vendor_buy, auctionable: entry?.auctionable}];
+  }));
+  return AuctionMath.call("profile", {id:item.id}, routeForPricing(route), batch, history, vendors, postage);
 }
 
 function timingText(label, result, basis = "per batch") {
@@ -147,9 +35,7 @@ function timingText(label, result, basis = "per batch") {
     result.winners.length === result.compared
       ? "Same median at all compared hours"
       : result.winners.map((bin) => hourText(bin.hour)).join(", ") + " UTC";
-  const counts = result.winners.map((bin) => bin.days);
-  const minDays = Math.min(...counts),
-    maxDays = Math.max(...counts);
+  const { minDays, maxDays } = result;
   const days = minDays === maxDays ? minDays : minDays + "–" + maxDays;
   return (
     label +
@@ -170,18 +56,9 @@ function timingText(label, result, basis = "per batch") {
 const utcHour = (hour) => String(hour).padStart(2, "0") + ":00";
 
 function dailyPriceChart(samples, url, key) {
-  const today = Math.floor(Date.now() / 86400000),
-    first = today - 27;
-  const dates = Array.from({ length: 28 }, (_, i) =>
-    new Date((first + i) * 86400000).toISOString().slice(0, 10),
-  );
-  const buckets = dates.map(() => []);
-  for (const [t, v] of samples) buckets[Math.floor(t / 86400) - first]?.push(v);
-  const sampled = buckets.flatMap((values, hour) =>
-    values.length
-      ? [{ hour, count: values.length, value: median(values) }]
-      : [],
-  );
+  const profile = AuctionMath.call("daily", samples, Date.now());
+  const dates = profile.dates.map(t => new Date(t).toISOString().slice(0, 10));
+  const sampled = profile.sampled;
   return hourlyChart([["Unit price", { sampled }]], url, key, null, dates);
 }
 
@@ -214,15 +91,12 @@ function hourlyChart(columns, url, key, highPrice, dates) {
   if (!values.length)
     return '<p class="hint">The chart will appear when hourly prices are available.</p>';
 
-  const peak = Math.max(...values) || 1;
-  const power = 10 ** Math.floor(Math.log10(peak));
-  const ceiling = ([1, 2, 5, 10].find((n) => n * power >= peak) || 10) * power;
-  const divisor = ceiling >= 10000 ? 10000 : ceiling >= 100 ? 100 : 1;
+  const { ceiling, divisor, top, middle } = AuctionMath.call("chartScale", values);
   const unit = divisor === 10000 ? "g" : divisor === 100 ? "s" : "c";
   const tick = (n) =>
-    (n / divisor).toLocaleString(undefined, {
+    n.toLocaleString(undefined, {
       maximumSignificantDigits: 3,
-      notation: n / divisor >= 1000 ? "compact" : "standard",
+      notation: n >= 1000 ? "compact" : "standard",
     }) + unit;
   const periodLabel = (n) => (dates ? dates[n] : utcHour(n)) + " UTC";
   const hours = Array.from({ length: dates?.length || 24 }, (_, hour) => hour);
@@ -260,7 +134,7 @@ function hourlyChart(columns, url, key, highPrice, dates) {
           const style =
             s.fixed || value == null
               ? "visibility:hidden"
-              : `height:${(100 * value) / ceiling}%`;
+              : `height:${AuctionMath.scalar.chart_percent(value, ceiling)}%`;
           return `<span class="hour-bar series-${i}" data-detail="${esc(detail)}" style="${style}" ${s.best.has(hour) ? "data-best" : ""}></span>`;
         })
         .join("");
@@ -270,7 +144,7 @@ function hourlyChart(columns, url, key, highPrice, dates) {
   const rules = series
     .map((s, i) =>
       s.fixed && s.value != null
-        ? `<span class="vendor-rule series-${i}" style="bottom:${(100 * s.value) / ceiling}%"></span>`
+        ? `<span class="vendor-rule series-${i}" style="bottom:${AuctionMath.scalar.chart_percent(s.value, ceiling)}%"></span>`
         : "",
     )
     .join("");
@@ -302,7 +176,7 @@ function hourlyChart(columns, url, key, highPrice, dates) {
   return `<figure class="hourly-chart" style="--chart-periods:${hours.length}" data-chart-key="${esc(key)}" data-chart-url="${esc(url)}">
     <figcaption><strong>${title}</strong><span>${bestKey}${dates ? "Daily medians · UTC" : "28-day medians"}</span></figcaption>
     <div class="hour-graph">
-      <div class="hour-y" aria-hidden="true"><span>${tick(ceiling)}</span><span>${tick(ceiling / 2)}</span><span>0</span></div>
+      <div class="hour-y" aria-hidden="true"><span>${tick(top)}</span><span>${tick(middle)}</span><span>0</span></div>
       <div class="hour-plot" aria-hidden="true">${bands}${rules}</div>
       <div class="hour-x" aria-hidden="true">${ticks}</div>
       <input class="hour-slider" type="range" min="0" max="${hours.length - 1}" step="1" value="${selected}"
@@ -395,12 +269,12 @@ function timingPanel(item, route, c, url) {
   const entry = timingCache.get(url);
   let result = "";
   if (entry?.data) {
-    const { buy, sell } = timingProfile(
+    const { buy, sell, margin: projectedMargin } = timingProfile(
       item,
       route,
       c.batch,
       entry.data,
-      listingBook,
+      listingBook, summary(item, route, c).postage,
     );
     const columns = [
       ["Batch cost", buy],
@@ -409,7 +283,7 @@ function timingPanel(item, route, c, url) {
     const margin =
       buy.value != null && sell.value != null
         ? "<p>Projected batch margin at these hours, including postage · <strong>" +
-          money(sell.value - buy.value - summary(item, route, c).postage) +
+          money(projectedMargin) +
           "</strong></p>"
         : "";
     result =

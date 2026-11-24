@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>WoW Auction Monitor</title>
     <link rel="stylesheet" href="/app.css" />
+    <script src="/calculations.js" defer></script>
     <script src="/shopping.js" defer></script>
     <script src="/history.js" defer></script>
     <script src="/route.js" defer></script>
@@ -179,6 +180,8 @@
       </div>
       <p id="sim-stock" class="estimated" hidden></p>
       <form id="sim-form">
+        <label id="sim-limit-label" hidden>Maximum crafts<input id="sim-limit" type="number" min="1" max="10000" value="100" required disabled /></label>
+        <label id="sim-budget-label" hidden>Gold budget<input id="sim-budget" type="number" min="0" step="0.0001" placeholder="Optional" disabled /></label>
         <label id="sim-target-label" hidden>Finished pieces wanted<input id="sim-target" type="number" min="1" max="10000" step="1" required disabled /></label>
         <label
           >Price deviation (% of quote)<input

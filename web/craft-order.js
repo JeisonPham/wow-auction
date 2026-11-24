@@ -3,8 +3,9 @@
 function craftOrderModel(item, route, settings) {
   return {
     order: true,
+    settings, destroys: destroys(route),
     chained: !!route.stages?.length,
-    target: Math.min(10000, settings.batch * route.quantity),
+    target: AuctionMath.scalar.default_target(route.quantity, settings.batch),
     yield: craftYield(item, route, settings),
     lines: route.inputs.map((line) => {
       const entry = listingBook.get(line.id);
@@ -12,6 +13,7 @@ function craftOrderModel(item, route, settings) {
         id: line.id,
         name: line.name,
         quantity: line.quantity,
+        max_stack: line.max_stack || settings.stack,
         bound: line.source === "bound" || entry?.auctionable === false,
         vendor:
           entry?.vendor_buy ??
@@ -37,10 +39,7 @@ function orderInputTable(lines) {
           esc(timestamp(snapshot.observed_at)) +
           "</small>";
         if (snapshot.lots.length) {
-          const low = snapshot.lots.reduce(
-            (p, [size, price]) => Math.min(p, price / size),
-            Infinity,
-          );
+          const low = AuctionMath.call("lowest", snapshot.lots);
           market += "<br>From " + money(low) + " per unit";
         } else if (snapshot.available) market += "<br>Stack prices unavailable";
       }
@@ -130,7 +129,7 @@ function orderResults(result, trials, lines) {
         " / " +
         trials.toLocaleString() +
         " (" +
-        ((100 * result.filled) / trials).toFixed(1) +
+        result.fillPercent.toFixed(1) +
         "%)",
     ],
     [
@@ -146,7 +145,7 @@ function orderResults(result, trials, lines) {
         ["Median cost", money(result.median)],
         ["Mean cost", money(result.average)],
         ["Middle 90% of costs", money(result.p5) + " – " + money(result.p95)],
-        ["95th-percentile budget", money(Math.ceil(result.p95))],
+        ["95th-percentile budget", money(result.budget95)],
       ]) +
       simulationDistribution(result);
   } else {
@@ -157,7 +156,7 @@ function orderResults(result, trials, lines) {
       ? [
           [
             line.name,
-            ((100 * result.shortages[i]) / trials).toFixed(1) + "% of trials",
+            result.shortagePercent[i].toFixed(1) + "% of trials",
           ],
         ]
       : [],
@@ -165,4 +164,16 @@ function orderResults(result, trials, lines) {
   if (shortages.length)
     html += "<h3>Reagent shortages</h3>" + simulationStats(shortages);
   return html;
+}
+
+function optimizationResults(result) {
+  const units = result.minPieces === result.maxPieces ? result.pieces.toLocaleString()
+    : result.pieces.toLocaleString() + " expected (" + result.minPieces.toLocaleString() + "–" + result.maxPieces.toLocaleString() + ")";
+  return "<h3>Recommended order</h3>" + simulationStats([
+    ["Crafts", result.casts.toLocaleString()], ["Finished pieces", units],
+    ["Purchase cost including postage", money(result.cost)], ["Postage", money(result.postage)],
+    ["Projected sale proceeds", money(result.out)], ["Projected net profit", money(result.profit)],
+    ["Largest feasible craft count", result.feasible.toLocaleString() + " · " + result.constraint],
+  ]) + (result.casts ? "" : "<p>" + (result.feasible
+    ? "Every feasible order breaks even or loses gold." : "The available supply or budget cannot fund one craft.") + "</p>");
 }
