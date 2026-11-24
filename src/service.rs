@@ -421,7 +421,11 @@ fn handle(mut r: Request, c: &Config, state: &Mutex<State>) {
         };
     }
     let mut s = state.lock().unwrap();
-    if path == "/api/reagent-listings" {
+    if matches!(
+        path.as_str(),
+        "/api/reagent-listings" | "/api/simulation-listings"
+    ) {
+        let simulation = path == "/api/simulation-listings";
         let ids = r
             .url()
             .split_once('?')
@@ -442,17 +446,21 @@ fn handle(mut r: Request, c: &Config, state: &Mutex<State>) {
             );
         };
         let t = now();
-        let checks = scan::MarketChecks::new(s.bundle.as_ref(), t, c.age);
+        let horizon = if simulation { u64::MAX } else { c.age };
+        let checks = scan::MarketChecks::new(s.bundle.as_ref(), t, horizon);
         let mut items = serde_json::Map::new();
         for id in ids {
             items.entry(id.to_string()).or_insert_with(|| {
-                json!(depth::ListingSnapshot::for_item(
-                    id,
-                    &checks,
-                    &s.blizzard,
-                    t,
-                    c.age
-                ))
+                let Some(snapshot) =
+                    depth::ListingSnapshot::for_item(id, &checks, &s.blizzard, t, horizon)
+                else {
+                    return Value::Null;
+                };
+                let mut entry = json!(snapshot);
+                if simulation {
+                    entry["stale"] = json!(!crate::fresh(snapshot.observed_at, t, c.age));
+                }
+                entry
             });
         }
         drop(s);

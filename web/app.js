@@ -134,7 +134,7 @@ function setup() {
   $("level").value = p.level;
   $("route").value = p.route || "";
   $("profitability").value = p.profitability || "";
-  $("pricing").value = p.pricing || "estimates";
+  $("pricing").value = p.pricing || "forecast";
   $("floor").value = p.floor || "0";
   $("trainingCost").value = p.trainingCost || "";
   $("trainingCostLabel").hidden = v !== "professions";
@@ -478,8 +478,8 @@ function render(preserveDraft = false) {
       : [
           "Item",
           "Route",
-          "Cost / run",
-          "Profit / run",
+          (!p.pricing || p.pricing === "forecast") ? "Mean cost / run" : "Cost / run",
+          (!p.pricing || p.pricing === "forecast") ? "Mean profit / run" : "Profit / run",
           "Time / run",
           "Repeat gold/hour",
           "Stock",
@@ -527,7 +527,7 @@ function render(preserveDraft = false) {
               profitability(r.profit) +
               '">' +
               (r.profit == null ? "Unknown" : money(r.profit)) +
-              "</span>",
+              "</span>" + (r.forecast?.winPercent != null ? "<br><small>" + r.forecast.winPercent.toFixed(1) + "% profitable trials</small>" : ""),
             duration(r.timing?.elapsed_seconds) +
               (r.timing?.assumed_cast
                 ? "<br><small>Assumed cast time</small>"
@@ -666,6 +666,7 @@ function clearSimulation() {
   $("sim-status").textContent = "";
 }
 function craftYield(item, route, c) {
+  if (route.forecast) route = route.baseRoute;
   return {
     key: "recipe/" + (route.recipe_id || item.id),
     min: route.quantity_min ?? route.quantity,
@@ -674,6 +675,10 @@ function craftYield(item, route, c) {
     netPerUnit:
       route.net_unit_value ??
       (route.proceeds == null ? null : AuctionMath.scalar.unit_value(route.proceeds, route.quantity)),
+    marketSale: route.kind === "craft_auction" || destroys(route),
+    saleItems: route.kind === "craft_auction"
+      ? [{id: item.id, name: item.name, quantity: route.quantity, unit_cost: item.estimate ?? null}]
+      : (route.outputs || []),
     timing: route.timing,
     returnStack:
       c.mail && c.back && !destroys(route) ? item.max_stack || c.stack : null,
@@ -686,7 +691,7 @@ function openSimulation(name, model, shortages, at) {
   $("sim-title").textContent =
     name + (model.optimize ? " · Optimal craft quantity" : model.order ? " · Crafting cost" : model.unitOnly ? " · Unit price" : " · Craft batch");
   $("sim-context").textContent = model.optimize
-    ? "Find the whole-craft count with the highest projected total profit using current reagent listings, vendor prices and the route’s mailing settings."
+    ? "Compare whole-craft quantities across the same simulated markets. The recommendation maximizes average total profit, including skipped orders."
     : model.order
     ? "Enter the number of finished pieces you want. Each trial rolls the output of each cast until it reaches your target. Every whole number in the yield range is equally likely." +
       (model.chained ? " Intermediate steps use the route’s planned inputs and expected yields." : "")
@@ -701,7 +706,7 @@ function openSimulation(name, model, shortages, at) {
       model.yield.min +
       "–" +
       model.yield.max +
-      " pieces per final craft. Each cast rolls independently with equal odds for each whole number. Unit sale values and vendor prices stay fixed." +
+      " pieces per final craft. Each cast rolls independently with equal odds for each whole number. Auction sale prices vary with the price deviation. Vendor prices are fixed." +
       (model.chained
         ? " Intermediate steps follow the displayed production plan."
         : "") +
@@ -720,21 +725,19 @@ function openSimulation(name, model, shortages, at) {
   $("sim-budget-label").hidden = $("sim-budget").disabled = !model.optimize;
   $("sim-limit").value = saved.optimizer?.limit ?? 100;
   $("sim-budget").value = saved.optimizer?.budget ?? "";
-  for (const id of ["sim-volatility", "sim-trials"]) {
-    $(id).closest("label").hidden = $(id).disabled = !!model.optimize;
-  }
   $("sim-form").querySelector("button").textContent = model.optimize ? "Find best quantity" : "Run simulation";
   $("sim-target-label").hidden = $("sim-target").disabled = !model.order || !!model.optimize;
-  $("sim-stock-spread-label").hidden = $("sim-stock-spread").disabled = !model.order || !!model.optimize;
+  $("sim-stock-spread-label").hidden = $("sim-stock-spread").disabled = !model.order;
   $("sim-target").value = model.order ? model.target : "";
   $("sim-stock-spread").value = saved.simulation?.stockSpread ?? 10;
   $("sim-columns").innerHTML = (model.order
     ? ["Reagent", "Per cast", "Auction listings", "Vendor / unit"]
     : ["Item", "Quantity", "Quote per unit", "Source"]).map(label => "<th>" + label + "</th>").join("");
+  $("sim-sales").textContent = "";
   $("sim-assumptions").textContent = model.optimize
-    ? "Output uses the average of the recipe’s yield range. Sale proceeds assume the entire output sells at the route’s net value per piece. Equal-profit orders favor fewer crafts."
+    ? "Auction prices and stock vary around their last observations. Each cast rolls its yield. Vendor prices are fixed. A trial skips the whole order if stock or gold runs short, earning zero. Filled orders include losses and assume all output sells. A tie favors fewer crafts."
     : model.order
-    ? "Prices and listed stack counts vary independently around the newest fresh in-game or Blizzard snapshot. Each reagent gets its own normal price and stock draws. Purchases use whole stacks, cheapest per unit first, and can use a vendor at a fixed price. Reagent cost excludes postage."
+    ? "Prices and listed stack counts vary independently around the last recorded in-game or Blizzard snapshot. Older observations are marked Stale. Each reagent gets its own normal price and stock draws. Purchases use whole stacks, cheapest per unit first, and can use a vendor at a fixed price. Reagent cost excludes postage."
     : defaultSimAssumptions;
   $("sim-inputs").innerHTML = model.order ? orderInputTable(model.lines) : model.lines
     .map(
@@ -822,7 +825,7 @@ function kellyResults(k, batch) {
 }
 function showSimulationResults(result, trials) {
   if (simulationModel.optimize) {
-    $("sim-status").textContent = "Craft sizes compared.";
+    $("sim-status").textContent = trials.toLocaleString() + " trials completed.";
     $("sim-result").innerHTML = optimizationResults(result);
     $("sim-status").scrollIntoView?.({ block: "start" });
     return;
@@ -904,6 +907,7 @@ $("sim-close").onclick = () => $("simulation").close();
 $("simulation").onclose = () => {
   clearSimulation();
   simulationModel = null;
+  if (report && view() !== "market" && (prefs().pricing || "forecast") === "forecast") render(true);
 };
 $("sim-form").oninput = clearSimulation;
 $("sim-form").onsubmit = async (event) => {
@@ -948,18 +952,20 @@ $("sim-form").onsubmit = async (event) => {
     saved.optimizer = {limit: model.limit, budget: budget.value};
   } else if (model.order) {
     model.target = $("sim-target").valueAsNumber;
+  }
+  if (model.order) {
     model.stockSpread = $("sim-stock-spread").valueAsNumber;
     saved.simulation.stockSpread = model.stockSpread;
   }
   if (!gold.disabled) saved.simulation.gold = gold.value;
   save();
   if (model.order) {
-    $("sim-status").textContent = "Loading current reagent listings…";
+    $("sim-status").textContent = "Loading last recorded auction listings…";
     $("sim-inputs").innerHTML = orderInputTable(model.lines);
     const request = new AbortController();
     listingRequest = request;
     try {
-      model.lines = await loadOrderListings(model.lines, request.signal);
+      model.lines = await loadOrderListings(model, request.signal);
     } catch (error) {
       if (!request.signal.aborted)
         $("sim-status").textContent = error instanceof TypeError
@@ -970,7 +976,7 @@ $("sim-form").onsubmit = async (event) => {
     }
     if (request.signal.aborted) return;
   }
-  $("sim-status").textContent = model.optimize ? "Comparing craft sizes…" : "Running simulation…";
+  $("sim-status").textContent = model.optimize ? "Simulating markets and comparing craft sizes…" : "Running simulation…";
   try {
     const worker = new Worker("/price-simulation.js");
     simulationWorker = worker;
@@ -1018,7 +1024,8 @@ function calc(i, r) {
 }
 let routeQuotes = new WeakMap();
 function pricedRoute(i, r) {
-  const basis = prefs().pricing;
+  const basis = prefs().pricing || "forecast";
+  if (view() !== "market" && basis === "forecast") return forecastRoute(i, r);
   if (view() === "market" || !["listings", "percentile"].includes(basis)) return r;
   const c = calc(i, r);
   const age = basis === "percentile" ? (report.depth_max_age ?? 21600) : (report.shopping_max_age ?? 900);
@@ -1032,7 +1039,28 @@ function pricedRoute(i, r) {
   routeQuotes.set(r, {key, route});
   return route;
 }
+function forecastRoute(item, route) {
+  const sigma = saved.simulation?.volatility ?? 10;
+  const key = "recipe/" + (route.recipe_id || item.id);
+  const range = isCraft(route) && saved.yieldRanges?.[key];
+  const cacheKey = ["forecast", sigma, range?.min, range?.max].join("/");
+  const cached = routeQuotes.get(route);
+  if (cached?.key === cacheKey) return cached.route;
+  const output = craftYield(item, route, {mail: false});
+  if (range) Object.assign(output, range);
+  const model = {batch: 1, lines: route.inputs, proceeds: route.proceeds, yield: output};
+  // Repeatable screening trials keep the table stable when filtering or navigating.
+  const forecast = AuctionMath.call("forecast", model, 512, sigma, item.id);
+  const timing = route.timing && {...route.timing, gold_per_hour: forecast.repeatGoldPerHour};
+  const priced = {
+    ...route, forecast, baseRoute: route, timing,
+    cost: forecast.cost, proceeds: forecast.proceeds, profit: forecast.profit,
+  };
+  routeQuotes.set(route, {key: cacheKey, route: priced});
+  return priced;
+}
 function basisText(r) {
+  if (r.forecast) return "Monte Carlo forecast from 512 one-run trials at " + (saved.simulation?.volatility ?? 10) + "% price deviation. Assumes the quoted inputs can be bought.";
   if (r.percentileMode) return "Quantity percentile budgets each reagent at its selected unit price.";
   return r.shopping ? "Current listing prices for this batch." : "Latest available prices. In-game prices are unit-weighted averages.";
 }
@@ -1270,7 +1298,7 @@ main.onclick = async (e) => {
   } else if (btn.hasAttribute("data-sim-craft")) {
     const el = btn.closest(".route");
     const { i, r } = rows[Number(el.dataset.idx)];
-    const route = r || i.routes[Number(el.dataset.route)];
+    const route = r?.forecast ? r.baseRoute : r || i.routes[Number(el.dataset.route)];
     const c = calc(i, route);
     const batch = summary(i, route, c);
     openSimulation(

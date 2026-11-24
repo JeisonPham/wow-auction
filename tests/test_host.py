@@ -185,6 +185,10 @@ class HostTests(unittest.TestCase):
         for d in range(3):
             for k, (h, price) in enumerate(((8, 2), (18, 7))):
                 upload(2*d+k+1, day+d*86400+h*3600, price)
+        stale = json.loads(self.req(f"/api/simulation-listings?items={ore}")[1])["items"][str(ore)]
+        self.assertTrue(stale["stale"])
+        self.assertEqual(stale["available"], 100)
+        self.assertIsNone(json.loads(self.req(f"/api/reagent-listings?items={ore}")[1])["items"][str(ore)])
         upload(7, now, 2)
         upload(7, now, 2)
         self.stop()

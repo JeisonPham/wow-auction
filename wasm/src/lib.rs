@@ -28,8 +28,9 @@ fn dispatch(command: &V) -> Result<V> {
     let a = &command["args"];
     Ok(match command["op"].as_str().unwrap_or("") {
         "register" => return market::register(&a[0]),
-        "simulate" => return simulation::simulate(a),
-        "optimize" => return optimize::optimize(&a[0]),
+        "simulate" => return simulation::simulate(a, false),
+        "forecast" => simulation::simulate(a, true).unwrap_or_else(|_| json!({"cost":null,"proceeds":null,"profit":null,"winPercent":null,"repeatGoldPerHour":null})),
+        "optimize" => return optimize::optimize(a),
         "kelly" => json!(simulation::kelly(
             &serde_json::from_value::<Vec<f64>>(a[0].clone()).map_err(|e| e.to_string())?
         )),

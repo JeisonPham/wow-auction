@@ -85,6 +85,7 @@
             </select></label
           ><label id="pricingLabel"
             >Price basis<select id="pricing">
+              <option value="forecast">Monte Carlo forecast</option>
               <option value="estimates">Latest available prices</option>
               <option value="listings">Current listings</option>
               <option value="percentile">Quantity percentile</option>
@@ -178,6 +179,7 @@
           <tbody id="sim-inputs"></tbody>
         </table>
       </div>
+      <p id="sim-sales" class="hint"></p>
       <p id="sim-stock" class="estimated" hidden></p>
       <form id="sim-form">
         <label id="sim-limit-label" hidden>Maximum crafts<input id="sim-limit" type="number" min="1" max="10000" value="100" required disabled /></label>

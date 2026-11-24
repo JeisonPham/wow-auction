@@ -42,7 +42,7 @@ pub(super) fn levels(lots: &[[u64; 3]]) -> Vec<[u64; 3]> {
 #[derive(Serialize)]
 pub(super) struct ListingSnapshot<'a> {
     source: &'static str,
-    observed_at: u64,
+    pub(super) observed_at: u64,
     available: u64,
     lots: &'a [[u64; 3]],
 }

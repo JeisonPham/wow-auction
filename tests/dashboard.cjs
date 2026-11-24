@@ -124,7 +124,7 @@ w.TextDecoder = TextDecoder;
 w.WebAssembly = WebAssembly;
 w.fetch = async (url) => {
   if (url === "/auction.wasm") return new Response(require("./wasm.cjs").bytes, {headers:{"Content-Type":"application/wasm"}});
-  if (url === "/api/reagent-listings?items=1001") {
+  if (url === "/api/reagent-listings?items=1001" || url.startsWith("/api/simulation-listings?items=")) {
     return {ok:true, json:async () => ({items:orderBook})};
   }
   if (url.startsWith("/api/price-history?")) {
@@ -264,7 +264,8 @@ async function runSimulation() {
   assert.equal(d.querySelectorAll("#body>tr").length, 3);
   w.location.hash = "#professions";
   await wait();
-  assert.equal(d.querySelector("#pricing").value, "estimates");
+  assert.equal(d.querySelector("#pricing").value, "forecast");
+  assert.match(d.querySelector("#body").textContent, /profitable trials/);
   const planning = d.querySelector("#pricing");
   planning.value = "estimates";
   planning.dispatchEvent(new w.Event("input"));
@@ -395,18 +396,20 @@ async function runSimulation() {
   assert.match(await runSimulation(), /No trial could fill this order/);
   dialog.close();
   d.querySelector("[data-optimize]").click();
-  assert.equal(d.querySelector("#sim-trials").disabled, true);
+  assert.equal(d.querySelector("#sim-trials").disabled, false);
+  assert.equal(d.querySelector("#sim-stock-spread").disabled, false);
   d.querySelector("#sim-budget").value = "0.0040"; // Ore and postage fit one cast.
   d.querySelector("#sim-form button").click();
   for (let n=0;n<300 && !d.querySelector("#sim-result dl");n++) await wait();
-  assert.match(d.querySelector("#sim-result").textContent, /Crafts1Finished pieces1/);
-  assert.match(d.querySelector("#sim-result").textContent, /Gold budget/);
+  assert.match(d.querySelector("#sim-result").textContent, /Crafts1Finished pieces per filled order1/);
+  assert.match(d.querySelector("#sim-result").textContent, /Chance of filling within budget100.0%/);
+  assert.match(d.querySelector("#sim-status").textContent, /5,000 trials completed/);
   dialog.close();
   d.querySelector("[data-sim-order]").click();
   orderBook = {1001: null};
   d.querySelector("#sim-form button").click();
   await wait();
-  assert.match(d.querySelector("#sim-status").textContent, /Fresh stack prices needed for Ore/);
+  assert.match(d.querySelector("#sim-status").textContent, /Recorded stack prices needed for Ore/);
   assert.equal(d.querySelector("#sim-result").textContent, "");
   dialog.close();
   d.querySelector("[data-sim-craft]").click();
@@ -661,6 +664,22 @@ async function runSimulation() {
     assert.equal(d.querySelector("h1").textContent, "Route unavailable");
     assert.equal(d.querySelector(".route-metrics"), null);
   }
+  // The optimizer uses last-known stack depth even when the live shopping view has expired.
+  buckle.routes.push({...route, kind:"craft_auction", recipe_id:"sale-test", net_unit_value:1});
+  orderBook = {
+    1001:{source:"In-game full scan", observed_at:at-86400, stale:true, available:6, lots:[[1,10,6]]},
+    2000:{source:"Blizzard Auction House", observed_at:at+2, stale:false, available:1, lots:[[1,100,1]]},
+  };
+  d.querySelector("#refresh").click();
+  await wait();
+  visit("/route?item=2000&exit=craft_auction&path=direct&recipe=sale-test");
+  d.querySelector("[data-optimize]").click();
+  for (const [id,value] of Object.entries({"sim-limit":2, "sim-volatility":0, "sim-stock-spread":0,
+    "sim-yield-min":1, "sim-yield-max":1, "sim-budget":""})) d.getElementById(id).value = value;
+  assert.match(await runSimulation(), /Expected net profit across all trials1s 1c/);
+  assert.match(d.querySelector("#sim-inputs").textContent,/In-game full scan · Stale/);
+  assert.match(d.querySelector("#sim-sales").textContent,/Blizzard Auction House/);
+  dialog.close();
   console.log(
     "Dashboard search, pagination, profit filters, routes, batch shortage, postage, clipboard and offline retention passed",
   );

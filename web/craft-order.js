@@ -29,12 +29,12 @@ function orderInputTable(lines) {
       const snapshot = line.snapshot;
       let market = "Awaiting listings";
       if (line.bound) market = "Bound item";
-      else if (snapshot === null) market = "No fresh snapshot";
+      else if (snapshot === null) market = "No recorded snapshot";
       else if (snapshot) {
         market =
           snapshot.available.toLocaleString() +
           " units · " +
-          esc(snapshot.source) +
+          esc(snapshot.source) + (snapshot.stale ? " · Stale" : "") +
           "<br><small>" +
           esc(timestamp(snapshot.observed_at)) +
           "</small>";
@@ -58,14 +58,14 @@ function orderInputTable(lines) {
     .join("");
 }
 
-async function loadOrderListings(lines, signal) {
-  const ids = [
-    ...new Set(lines.filter((line) => !line.bound).map((line) => line.id)),
-  ];
+async function loadOrderListings(model, signal) {
+  const lines = model.lines;
+  const sales = model.optimize && model.yield.marketSale ? model.yield.saleItems : [];
+  const ids = [...new Set([...lines.filter(line => !line.bound), ...sales].map(line => line.id))];
   const snapshots = {};
   for (let i = 0; i < ids.length; i += 128) {
     const response = await fetch(
-      "/api/reagent-listings?items=" + ids.slice(i, i + 128).join(","),
+      "/api/simulation-listings?items=" + ids.slice(i, i + 128).join(","),
       { cache: "no-store", signal },
     );
     if (!response.ok)
@@ -79,6 +79,22 @@ async function loadOrderListings(lines, signal) {
   }));
   if (signal.aborted) return [];
   $("sim-inputs").innerHTML = orderInputTable(inputs);
+  if (sales.length) {
+    const observations = [];
+    model.yield.saleItems = sales.map(line => {
+      const entry = listingBook.get(line.id);
+      const snapshot = snapshots[line.id];
+      const useListing = snapshot?.lots.length && (!entry?.estimate || snapshot.observed_at >= (entry.estimate_at ?? 0));
+      const unit = useListing ? AuctionMath.call("lowest", snapshot.lots) : entry?.estimate ?? line.unit_cost ?? null;
+      const source = useListing ? snapshot.source : entry?.estimate_source || "Report";
+      const time = useListing ? snapshot.observed_at : entry?.estimate_at;
+      const stale = useListing ? snapshot.stale : entry?.estimate_stale;
+      observations.push(line.name + " · " + money(unit) + " · " + source + (time ? " · " + timestamp(time) : "") + (stale ? " · Stale" : ""));
+      return {...line, unit_cost: unit};
+    });
+    model.yield.refreshSale = true;
+    $("sim-sales").textContent = "Auction sale quotes · " + observations.join(" | ");
+  }
   const unknown = inputs.filter(
     (line) =>
       line.vendor == null &&
@@ -94,7 +110,7 @@ async function loadOrderListings(lines, signal) {
     throw Error(
       [
         missing.length
-          ? "Fresh stack prices needed for " +
+          ? "Recorded stack prices needed for " +
             missing.join(", ") +
             ". Upload an auction scan or refresh Blizzard listings."
           : "",
@@ -118,7 +134,7 @@ function orderResults(result, trials, lines) {
   const stats = [
     ["Finished pieces wanted", result.target.toLocaleString()],
     [
-      "Reagents at current listings (" +
+      "Reagents at recorded listings (" +
         result.plannedRuns.toLocaleString() +
         " planned casts)",
       result.current == null ? "Insufficient stock" : money(result.current),
@@ -167,13 +183,22 @@ function orderResults(result, trials, lines) {
 }
 
 function optimizationResults(result) {
+  if (!result.casts) {
+    const reason = result.feasible
+      ? "No quantity had a positive average profit across the simulated markets."
+      : "No simulated market had enough affordable stock for one craft.";
+    return "<h3>Recommended order</h3>" + simulationStats([["Crafts", "0"], ["Expected net profit", money(0)]]) + "<p>" + reason + "</p>";
+  }
   const units = result.minPieces === result.maxPieces ? result.pieces.toLocaleString()
-    : result.pieces.toLocaleString() + " expected (" + result.minPieces.toLocaleString() + "–" + result.maxPieces.toLocaleString() + ")";
+    : result.pieces.toLocaleString(undefined, {maximumFractionDigits: 2}) + " average (" + result.minPieces.toLocaleString() + "–" + result.maxPieces.toLocaleString() + " possible)";
   return "<h3>Recommended order</h3>" + simulationStats([
-    ["Crafts", result.casts.toLocaleString()], ["Finished pieces", units],
-    ["Purchase cost including postage", money(result.cost)], ["Postage", money(result.postage)],
-    ["Projected sale proceeds", money(result.out)], ["Projected net profit", money(result.profit)],
-    ["Largest feasible craft count", result.feasible.toLocaleString() + " · " + result.constraint],
-  ]) + (result.casts ? "" : "<p>" + (result.feasible
-    ? "Every feasible order breaks even or loses gold." : "The available supply or budget cannot fund one craft.") + "</p>");
+    ["Crafts", result.casts.toLocaleString()], ["Finished pieces per filled order", units],
+    ["Expected net profit across all trials", money(result.profit)],
+    ["Middle 90% of net profits", money(result.p5) + " – " + money(result.p95)],
+    ["Chance of positive profit", result.winPercent.toFixed(1) + "%"],
+    ["Chance of filling within budget", result.fillPercent.toFixed(1) + "%"],
+    ["Mean cost per filled order, including postage", money(result.cost)],
+    ["Mean postage per filled order", money(result.postage)],
+    ["Mean sale proceeds per filled order", money(result.out)],
+  ]) + simulationDistribution(result);
 }

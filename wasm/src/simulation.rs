@@ -22,6 +22,7 @@ struct Model {
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct Line {
+    id: Option<u64>,
     quantity: u64,
     source: String,
     unit_cost: Option<f64>,
@@ -40,6 +41,8 @@ struct Yield {
     timing: Option<Timing>,
     return_stack: Option<u64>,
     post: f64,
+    market_sale: bool,
+    sale_items: Vec<SaleItem>,
 }
 #[derive(Deserialize, Default)]
 #[serde(default)]
@@ -50,18 +53,95 @@ struct Timing {
     cooldown_span: f64,
 }
 
+#[derive(Deserialize)]
+pub(crate) struct SaleItem {
+    pub id: u64,
+    pub quantity: f64,
+    pub unit_cost: Option<f64>,
+}
+
+// A material used on both sides of a route receives one market price in each trial.
+#[derive(Default)]
+pub(crate) struct MarketDraws(Vec<(u64, f64)>);
+impl MarketDraws {
+    pub fn price(&mut self, id: Option<u64>, rng: &mut Random, sigma: f64) -> f64 {
+        if sigma == 0. {
+            return 1.;
+        }
+        if let Some(id) = id {
+            if let Some((_, factor)) = self.0.iter().find(|(key, _)| *key == id) {
+                return *factor;
+            }
+            let factor = rng.price(sigma);
+            self.0.push((id, factor));
+            factor
+        } else {
+            rng.price(sigma)
+        }
+    }
+}
+pub(crate) struct SaleMarket {
+    // Relative contributions to the route's net sale quote, indexed by item ID.
+    shares: Vec<(Option<u64>, f64)>,
+}
+impl SaleMarket {
+    pub fn new(auction: bool, items: &[SaleItem]) -> Self {
+        if !auction {
+            return Self { shares: vec![] };
+        }
+        if let [item] = items {
+            return Self {
+                shares: vec![(Some(item.id), 1.)],
+            };
+        }
+        let weights: Option<Vec<_>> = items
+            .iter()
+            .map(|i| Some((Some(i.id), i.unit_cost? * i.quantity)))
+            .collect();
+        if let Some(mut shares) = weights {
+            let total: f64 = shares.iter().map(|(_, v)| *v).sum();
+            if total > 0. {
+                for (_, value) in &mut shares {
+                    *value /= total;
+                }
+                return Self { shares };
+            }
+        }
+        Self {
+            shares: vec![(None, 1.)],
+        }
+    }
+    pub fn factor(&self, draws: &mut MarketDraws, rng: &mut Random, sigma: f64) -> f64 {
+        if self.shares.is_empty() || sigma == 0. {
+            return 1.;
+        }
+        self.shares
+            .iter()
+            .map(|&(id, share)| share * draws.price(id, rng, sigma))
+            .sum()
+    }
+}
 // SplitMix64 uses a seed supplied once by the browser. No host calls within a trial.
-struct Random {
+pub(crate) struct Random {
     state: u64,
     spare: Option<f64>,
 }
 impl Random {
-    fn uniform(&mut self) -> f64 {
+    pub(crate) fn new(seed: u64) -> Self {
+        Self {
+            state: seed,
+            spare: None,
+        }
+    }
+    pub(crate) fn next_seed(&mut self) -> u64 {
         self.state = self.state.wrapping_add(0x9e3779b97f4a7c15);
         let mut z = self.state;
         z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
         z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
-        ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64
+        z ^ (z >> 31)
+    }
+    fn uniform(&mut self) -> f64 {
+        (self.next_seed() >> 11) as f64 / (1u64 << 53) as f64
     }
     fn normal(&mut self) -> f64 {
         if let Some(n) = self.spare.take() {
@@ -72,7 +152,7 @@ impl Random {
         self.spare = Some(radius * sin);
         radius * cos
     }
-    fn price(&mut self, sigma: f64) -> f64 {
+    pub(crate) fn price(&mut self, sigma: f64) -> f64 {
         if sigma == 0. {
             return 1.;
         }
@@ -83,21 +163,28 @@ impl Random {
             }
         }
     }
-    fn pieces(&mut self, y: &Yield) -> u64 {
-        if y.min == y.max {
-            return u64::from(y.min);
+    pub(crate) fn stock(&mut self, spread: f64) -> f64 {
+        if spread == 0. {
+            1.
+        } else {
+            (1. + self.normal() * spread / 100.).max(0.)
         }
-        u64::from(y.min) + (self.uniform() * ((y.max - y.min) as f64 + 1.)) as u64
+    }
+    pub(crate) fn pieces(&mut self, min: u32, max: u32) -> u64 {
+        if min == max {
+            return u64::from(min);
+        }
+        u64::from(min) + (self.uniform() * (f64::from(max - min) + 1.)) as u64
     }
 }
-fn quantile(s: &[f64], f: f64) -> f64 {
+pub(crate) fn quantile(s: &[f64], f: f64) -> f64 {
     let i = (s.len() - 1) as f64 * f;
     s[i.floor() as usize] + (s[i.ceil() as usize] - s[i.floor() as usize]) * i.fract()
 }
 fn mean(s: &[f64]) -> f64 {
     s.iter().sum::<f64>() / s.len() as f64
 }
-fn distribution(s: &[f64], result: &mut V, metric: &str) {
+pub(crate) fn distribution(s: &[f64], result: &mut V, metric: &str) {
     let (low, high) = (s[0], s[s.len() - 1]);
     let n = if low == high { 1 } else { 20 };
     let mut bins = vec![0; n];
@@ -242,7 +329,7 @@ fn order(m: &mut Model, trials: usize, sigma: f64, rng: &mut Random) -> Result<V
         } else {
             let (mut made, mut n) = (0, 0);
             while made < m.target {
-                made += rng.pieces(y);
+                made += rng.pieces(y.min, y.max);
                 n += 1
             }
             n
@@ -251,8 +338,8 @@ fn order(m: &mut Model, trials: usize, sigma: f64, rng: &mut Random) -> Result<V
         let mut total = Some(0.);
         for (i, (p, l)) in prices.iter_mut().zip(&m.lines).enumerate() {
             let auction = !p.lots.is_empty();
-            let stock = if auction && m.stock_spread > 0. {
-                (1. + rng.normal() * m.stock_spread / 100.).max(0.)
+            let stock = if auction {
+                rng.stock(m.stock_spread)
             } else {
                 1.
             };
@@ -288,7 +375,7 @@ fn order(m: &mut Model, trials: usize, sigma: f64, rng: &mut Random) -> Result<V
     result["runs"] = json!(run_total as f64 / trials as f64);
     Ok(result)
 }
-pub fn simulate(a: &V) -> Result<V> {
+pub fn simulate(a: &V, forecast: bool) -> Result<V> {
     let mut m: Model = serde_json::from_value(a[0].clone()).map_err(|e| e.to_string())?;
     let trials = uint(&a[1]) as usize;
     let sigma = num(&a[2]);
@@ -301,10 +388,14 @@ pub fn simulate(a: &V) -> Result<V> {
     {
         return Err("Invalid craft yield bounds.".into());
     }
-    let mut rng = Random {
-        state: uint(&a[3]),
-        spare: None,
-    };
+    let mut rng = Random::new(uint(&a[3]));
+    if forecast
+        && m.lines
+            .iter()
+            .any(|l| l.cost.is_none() || (l.source != "vendor" && l.unit_cost.is_none()))
+    {
+        return Err("Missing reagent quote.".into());
+    }
     if m.order {
         return order(&mut m, trials, sigma, &mut rng);
     }
@@ -326,10 +417,15 @@ pub fn simulate(a: &V) -> Result<V> {
     let auction: Vec<_> = m.lines.iter().filter(|l| l.source != "vendor").collect();
     let (mut costs, mut profits, mut units, mut returns) = (vec![], vec![], vec![], vec![]);
     let (mut wins, mut timed, mut rate) = (0, 0, 0.);
+    let sale_market = m
+        .output
+        .as_ref()
+        .map(|y| SaleMarket::new(y.market_sale, &y.sale_items));
     for _ in 0..trials {
+        let mut draws = MarketDraws::default();
         let mut cost = fixed;
         for l in &auction {
-            let p = l.unit_cost.unwrap_or(0.) * rng.price(sigma);
+            let p = l.unit_cost.unwrap_or(0.) * draws.price(l.id, &mut rng, sigma);
             if m.unit_only {
                 cost = p
             } else {
@@ -344,6 +440,10 @@ pub fn simulate(a: &V) -> Result<V> {
         let mut sale = m.proceeds.unwrap_or(0.);
         let mut seconds = 0.;
         if let Some(y) = &m.output {
+            let factor = sale_market
+                .as_ref()
+                .unwrap()
+                .factor(&mut draws, &mut rng, sigma);
             let mut pieces = 0;
             sale = 0.;
             let timing = y.timing.as_ref();
@@ -356,13 +456,13 @@ pub fn simulate(a: &V) -> Result<V> {
             let repeats = if y.min == y.max { 1 } else { m.batch };
             let multiplier = m.batch / repeats;
             for j in 0..repeats {
-                let n = rng.pieces(y);
+                let n = rng.pieces(y.min, y.max);
                 pieces += n * multiplier;
                 sale += multiplier as f64
-                    * if n == u64::from(y.base) {
+                    * if n == u64::from(y.base) && factor == 1. {
                         m.proceeds.unwrap_or(0.) / batch
                     } else {
-                        (n as f64 * y.net_per_unit.unwrap_or(0.)).floor()
+                        (n as f64 * y.net_per_unit.unwrap_or(0.) * factor).floor()
                     };
                 if let Some(t) = timing.filter(|_| de > 0.) {
                     let elapsed = t.elapsed_seconds + (n as f64 - f64::from(y.base)) * de;
@@ -398,10 +498,28 @@ pub fn simulate(a: &V) -> Result<V> {
             }
         }
     }
+    if forecast {
+        let cost = mean(&costs);
+        let profit = (!profits.is_empty()).then(|| mean(&profits));
+        let repeat = m
+            .output
+            .as_ref()
+            .and_then(|y| y.timing.as_ref())
+            .map(|t| t.repeat_seconds);
+        return Ok(
+            json!({"cost":cost, "proceeds":profit.map(|p| cost+p), "profit":profit,
+            "winPercent":profit.map(|_| 100. * wins as f64 / trials as f64),
+            "repeatGoldPerHour":profit.zip(repeat).and_then(|(p, t)| ratio(p*0.36,t))}),
+        );
+    }
     let mut out = stats(&mut costs);
     profits.sort_unstable_by(f64::total_cmp);
     units.sort_unstable_by(f64::total_cmp);
-    let varying = m.output.as_ref().is_some_and(|y| y.min != y.max) && !profits.is_empty();
+    let varying = m
+        .output
+        .as_ref()
+        .is_some_and(|y| y.min != y.max || (y.market_sale && sigma > 0.))
+        && !profits.is_empty();
     distribution(
         if varying { &profits } else { &costs },
         &mut out,

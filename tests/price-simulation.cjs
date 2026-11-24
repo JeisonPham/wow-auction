@@ -224,3 +224,25 @@ assert.equal(varyingYield.current, 30);
 assert.throws(() => targetSim({...targetOrder, target: 0}));
 assert.throws(() => targetSim({...targetOrder, stockSpread: -1}));
 console.log("Target pieces, whole stacks, variable yield, independent market spreads, vendor top-ups and conditional costs passed.");
+
+// The batch simulator and Kelly use the same auction sale draws as the optimizer.
+const marketCraft = {batch:1, bankroll:2000, proceeds:100, lines:[{id:1, cost:95, source:"vendor"}],
+  yield:{base:1,min:1,max:1,netPerUnit:100,marketSale:true,
+         saleItems:[{id:2,quantity:1,unit_cost:100}]}};
+const auction = simulate(marketCraft,35);
+assert.ok(auction.profit.p5<0 && auction.profit.p95>0 && auction.profitChance<0.65);
+assert.ok(auction.kelly.fraction<1);
+const vendorCraft = simulate({...marketCraft, yield:{...marketCraft.yield, marketSale:false}},35);
+assert.equal(vendorCraft.profitChance,1); assert.equal(vendorCraft.kelly.fraction,1);
+const shared = simulate({...marketCraft, lines:[{id:2, source:"checked", quantity:1, cost:100, unit_cost:100}]},35);
+assert.equal(shared.profitChance,0); assert.ok(shared.profit.p5>=-1);
+const diverse = simulate({...marketCraft, yield:{...marketCraft.yield,
+  saleItems:[{id:2,quantity:1,unit_cost:50},{id:3,quantity:1,unit_cost:50}]}},35);
+assert.ok(diverse.profit.p95 < auction.profit.p95 && diverse.profit.p5 > auction.profit.p5);
+const forecast = engine.call("forecast",marketCraft,30000,35,123);
+assert.ok(Math.abs(forecast.profit-auction.profit.mean)<1e-10);
+assert.equal(forecast.cost,auction.average);
+assert.equal(auction.chartMetric,"Batch profit");
+assert.equal(engine.call("forecast",{...marketCraft,lines:[{cost:null,unit_cost:null}]},512,10,1).profit,null);
+assert.equal(forecast.winPercent,auction.profitPercent);
+console.log("Auction exits, independent disenchant material markets, shared item prices and route forecasts passed.");
