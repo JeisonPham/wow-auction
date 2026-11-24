@@ -164,7 +164,7 @@ function fullRoute(item, r) {
       ${metric("Batch cost", money(b.cost))}${metric("Sale proceeds", money(b.out))}
       ${metric("Batch time", duration(b.seconds))}${metric("Batch gold per hour", hourly(b.goldPerHour))}
     </dl>
-    <div class="route-actions"><button data-copy>Copy Markdown</button>${isCraft(r) ? craftSimulationButton(r) : ""}</div>
+    <div class="route-actions">${isCraft(r) ? '<button class="sim-launch" aria-haspopup="dialog" data-sim-order>Estimate cost for a quantity</button>' + craftSimulationButton(r) : ""}<button data-copy>Copy Markdown</button></div>
     <div class="route-columns">
       <section class="route-panel"><h2>Production plan</h2>
         <ol class="production-list">${production.map((s) => "<li>" + esc(s) + "</li>").join("")}</ol>

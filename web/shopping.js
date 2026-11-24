@@ -13,12 +13,17 @@ function indexListings(items) {
   );
 }
 
-function quoteStacks(lots, need) {
+// Tier order stays valid when every price for an item moves by the same factor.
+// Keep whole stacks intact, including when an oversized final stack is cheaper.
+function quoteListedStacks(lots, need, priceFactor = 1, stockFactor = 1, vendor = null) {
   let cost = 0,
     units = 0,
-    best = null;
-  // Prefer low unit prices but compare the cash cost of oversize finishing stacks.
-  for (const [size, price, count] of lots) {
+    best = vendor == null ? null : { cost: vendor * need, units: need };
+  for (const [size, ask, listed] of lots) {
+    const price = ask * priceFactor;
+    if (vendor != null && price >= vendor * size) break;
+    const count = Math.round(listed * stockFactor);
+    if (!count) continue;
     const remaining = need - units;
     const fill = Math.ceil(remaining / size);
     if (fill <= count) {
@@ -29,8 +34,17 @@ function quoteStacks(lots, need) {
     const take = Math.min(count, Math.floor(remaining / size));
     cost += take * price;
     units += take * size;
+    if (vendor != null) {
+      const mixed = cost + (need - units) * vendor;
+      if (mixed < best.cost) best = { cost: mixed, units: need };
+    }
     if (units === need) break;
   }
+  return best;
+}
+
+function quoteStacks(lots, need) {
+  const best = quoteListedStacks(lots, need);
   if (
     !best ||
     !Number.isSafeInteger(best.cost) ||
@@ -38,6 +52,11 @@ function quoteStacks(lots, need) {
   )
     return null;
   if (lots.every((lot) => lot[0] === lots[0][0])) return best;
+  const combinations = stackCombinations(lots, need);
+  return combinations ? { cost: combinations.costs[need], units: combinations.quantities[need] } : best;
+}
+
+function stackCombinations(lots, need, workLimit = 250000) {
   // For mixed stacks, compare combinations. Bundle identical listings in
   // powers of two so large commodity counts do not require one pass per unit.
   // Very large baskets keep the feasible whole-stack quote found above.
@@ -47,7 +66,7 @@ function quoteStacks(lots, need) {
         sum + Math.ceil(Math.log2(1 + Math.min(count, Math.ceil(need / size)))),
       0,
     ) * need;
-  if (work > 250000) return best;
+  if (work > workLimit) return null;
   const costs = new Float64Array(need + 1).fill(Infinity);
   const quantities = new Float64Array(need + 1);
   costs[0] = 0;
@@ -70,7 +89,7 @@ function quoteStacks(lots, need) {
       }
     }
   }
-  return { cost: costs[need], units: quantities[need] };
+  return { costs, quantities };
 }
 
 function quoteShoppingBatch(item, route, settings, postage, book, cutoff) {

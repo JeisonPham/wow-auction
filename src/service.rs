@@ -386,6 +386,7 @@ fn handle(mut r: Request, c: &Config, state: &Mutex<State>) {
         "/app.css" => Some(("text/css", include_str!("../web/app.css"))),
         "/app.js" => Some(("text/javascript", include_str!("../web/app.js"))),
         "/route.js" => Some(("text/javascript", include_str!("../web/route.js"))),
+        "/craft-order.js" => Some(("text/javascript", include_str!("../web/craft-order.js"))),
         "/history.js" => Some(("text/javascript", include_str!("../web/history.js"))),
         "/shopping.js" => Some(("text/javascript", include_str!("../web/shopping.js"))),
         "/price-simulation.js" => Some((
@@ -415,6 +416,43 @@ fn handle(mut r: Request, c: &Config, state: &Mutex<State>) {
         };
     }
     let mut s = state.lock().unwrap();
+    if path == "/api/reagent-listings" {
+        let ids = r
+            .url()
+            .split_once('?')
+            .and_then(|(_, q)| q.strip_prefix("items="))
+            .and_then(|v| {
+                v.split(',')
+                    .take(129)
+                    .map(|id| id.parse::<u32>().ok())
+                    .collect::<Option<Vec<_>>>()
+            })
+            .filter(|v| v.len() <= 128 && !v.contains(&0));
+        let Some(ids) = ids else {
+            drop(s);
+            return fail(
+                r,
+                400,
+                "Expected items=ID,ID with up to 128 positive item IDs",
+            );
+        };
+        let t = now();
+        let checks = scan::MarketChecks::new(s.bundle.as_ref(), t, c.age);
+        let mut items = serde_json::Map::new();
+        for id in ids {
+            items.entry(id.to_string()).or_insert_with(|| {
+                json!(depth::ListingSnapshot::for_item(
+                    id,
+                    &checks,
+                    &s.blizzard,
+                    t,
+                    c.age
+                ))
+            });
+        }
+        drop(s);
+        return reply(r, 200, json!({ "items": items }));
+    }
     if path == "/api/scan-queue" && s.bundle.is_none() {
         return fail(r, 503, "awaiting first upload");
     }

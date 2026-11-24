@@ -82,6 +82,7 @@ class HostTests(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertIn(b'id="routePage"', html)
         self.assertIn(b'fullRoute', self.req("/route.js")[1])
+        self.assertIn(b'craftOrderModel', self.req("/craft-order.js")[1])
         self.assertEqual(self.req("/api/scan-queue")[0], 401)
         self.assertEqual(self.req("/api/scan-queue", token=self.token)[0], 503)
         at = int(time.time())
@@ -201,6 +202,15 @@ class HostTests(unittest.TestCase):
         self.assertEqual(quote(legacy, 1)["status"], "no_price_levels")
         self.assertEqual(quote(absent, 1)["available"], 0)
         self.assertEqual(quote(810100, 1)["status"], "no_depth")
+        stock = json.loads(self.req(f"/api/reagent-listings?items={ore},{legacy},{absent},810100")[1])["items"]
+        self.assertEqual(stock[str(ore)], dict(source="In-game item check", observed_at=now,
+                         available=100, lots=[[5, 10, 2], [1, 2, 70], [1, 20, 20]]))
+        self.assertEqual(stock[str(legacy)]["lots"], [])
+        self.assertEqual(stock[str(legacy)]["available"], 10)
+        self.assertEqual(stock[str(absent)]["available"], 0)
+        self.assertIsNone(stock["810100"])
+        for ids in ("", "0", "5,-1", ",".join(map(str, range(1, 130)))):
+            self.assertEqual(self.req("/api/reagent-listings?items=" + ids)[0], 400)
         for args in ("item=0&quantity=1", "item=1&quantity=0", "item=1&quantity=2&floor=101"):
             self.assertEqual(self.req("/api/purchase-quote?" + args)[0], 400)
         def series(need, floor):
@@ -366,6 +376,8 @@ with patch.object(blizzard, "build_opener") as opener:
                 self.assertEqual((i["estimate"], i["estimate_source"], i["estimate_at"]),
                                  (expected, "Blizzard Auction House", at))
                 self.assertIsNone(i["lots"])
+                stock = json.loads(self.req(f"/api/reagent-listings?items={item_id}")[1])["items"][str(item_id)]
+                self.assertEqual(stock["lots"], [[1, 13, 20]] if item_id == 2840 else [[2, 15, 1]])
                 quote = json.loads(self.req(f"/api/purchase-quote?item={item_id}&quantity=1")[1])
                 self.assertEqual((quote["source"], quote["available"], quote["unit_price"], quote["budget"]),
                                  ("Blizzard Auction House", 20 if item_id == 2840 else 2,

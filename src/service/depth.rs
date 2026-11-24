@@ -39,6 +39,48 @@ pub(super) fn levels(lots: &[[u64; 3]]) -> Vec<[u64; 3]> {
     levels
 }
 
+#[derive(Serialize)]
+pub(super) struct ListingSnapshot<'a> {
+    source: &'static str,
+    observed_at: u64,
+    available: u64,
+    lots: &'a [[u64; 3]],
+}
+
+impl<'a> ListingSnapshot<'a> {
+    pub fn for_item(
+        id: u32,
+        checks: &MarketChecks<'a>,
+        blizzard: &'a blizzard::Book,
+        now: u64,
+        age: u64,
+    ) -> Option<Self> {
+        let local = checks.get(id);
+        let api = blizzard.listings(id).filter(|(at, _)| fresh(*at, now, age));
+        let (source, observed_at, lots, available) = match (local, api) {
+            (Some((at, p, source)), api) if api.is_none_or(|(t, _)| at >= t) => (
+                source,
+                at,
+                p.map_or(&[][..], |p| p.lots.as_slice()),
+                p.map_or(0, |p| p.units),
+            ),
+            (_, Some((at, lots))) => (
+                "Blizzard Auction House",
+                at,
+                lots,
+                lots.iter().map(|&[size, _, count]| size * count).sum(),
+            ),
+            _ => return None,
+        };
+        Some(Self {
+            source,
+            observed_at,
+            lots,
+            available,
+        })
+    }
+}
+
 impl Depth {
     pub fn for_item(
         id: u32,
@@ -47,25 +89,12 @@ impl Depth {
         now: u64,
         age: u64,
     ) -> Option<Self> {
-        let local = checks.get(id);
-        let api = blizzard.listings(id).filter(|(at, _)| fresh(*at, now, age));
-        let (source, observed_at, lots, known_units) = match (local, api) {
-            (Some((at, p, source)), api) if api.is_none_or(|(t, _)| at >= t) => (
-                source,
-                at,
-                p.map_or(&[][..], |p| p.lots.as_slice()),
-                p.map_or(0, |p| p.units),
-            ),
-            (_, Some((at, lots))) => ("Blizzard Auction House", at, lots, 0),
-            _ => return None,
-        };
-        let levels = levels(lots);
-        let available = levels.last().map_or(0, |level| level[0]);
+        let snapshot = ListingSnapshot::for_item(id, checks, blizzard, now, age)?;
         Some(Self {
-            source,
-            observed_at,
-            available: available.max(known_units),
-            levels,
+            source: snapshot.source,
+            observed_at: snapshot.observed_at,
+            available: snapshot.available,
+            levels: levels(snapshot.lots),
         })
     }
 

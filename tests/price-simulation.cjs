@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const vm = require("node:vm");
 const fs = require("node:fs");
 const context = vm.createContext({ self: {} });
+vm.runInContext(fs.readFileSync("web/shopping.js", "utf8"), context);
 vm.runInContext(fs.readFileSync("web/price-simulation.js", "utf8"), context);
 function seeded(seed) {
   return () => {
@@ -214,3 +215,38 @@ assert.throws(
 console.log(
   "Kelly return pairing, log-optimal sizing, full losses, affordability, postage and stock caps passed.",
 );
+
+const targetOrder = {
+  order: true, target: 7, yield: {min: 2, max: 2, base: 2}, stockSpread: 0,
+  lines: [{quantity: 2, vendor: null, lots: [[1, 23, 4], [3, 15, 2]]}],
+};
+const targetSim = (model, spread = 0) => context.simulatePrices(model, 5000, spread, seeded(678));
+const full = targetSim(targetOrder);
+assert.equal(full.current, 76); // Four casts need eight units: both 3-stacks and two singles.
+assert.equal(full.median, 76);
+assert.equal(full.runs, 4);
+assert.equal(full.filled, 5000);
+const empty = targetSim({...targetOrder, target: 11});
+assert.equal(empty.filled, 0);
+assert.equal(empty.current, null);
+assert.equal(empty.p5, undefined);
+assert.equal(empty.shortages[0], 5000);
+const mixed = targetSim({...targetOrder, lines: [{quantity: 2, vendor: 8, lots: [[3, 15, 2], [1, 23, 4]]}]});
+assert.equal(mixed.current, 46); // Six at auction plus two from the vendor.
+const varyingStock = targetSim({...targetOrder, stockSpread: 65});
+assert.ok(varyingStock.filled > 0 && varyingStock.filled < 5000);
+assert.equal(varyingStock.bins.reduce((a,b) => a+b), varyingStock.filled);
+assert.ok(varyingStock.p5 < varyingStock.p95);
+assert.equal(varyingStock.shortages[0] + varyingStock.filled, 5000);
+const varyingPrices = targetSim(targetOrder, 20);
+assert.equal(varyingPrices.filled, 5000);
+assert.ok(varyingPrices.p5 < full.current && varyingPrices.p95 > full.current);
+const varyingYield = targetSim({...targetOrder, yield: {min: 1, max: 5, base: 3},
+  lines: [{quantity: 1, vendor: 10, lots: []}]}, 100);
+assert.ok(varyingYield.runs > 2 && varyingYield.runs < 4);
+assert.ok(varyingYield.p5 < varyingYield.p95);
+assert.equal(varyingYield.filled, 5000);
+assert.equal(varyingYield.current, 30);
+assert.throws(() => targetSim({...targetOrder, target: 0}));
+assert.throws(() => targetSim({...targetOrder, stockSpread: -1}));
+console.log("Target pieces, whole stacks, variable yield, independent market spreads, vendor top-ups and conditional costs passed.");

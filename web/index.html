@@ -8,6 +8,7 @@
     <script src="/shopping.js" defer></script>
     <script src="/history.js" defer></script>
     <script src="/route.js" defer></script>
+    <script src="/craft-order.js" defer></script>
     <script src="/app.js" defer></script>
   </head>
   <body>
@@ -166,7 +167,7 @@
       <div class="scroll">
         <table aria-label="Simulation inputs">
           <thead>
-            <tr>
+            <tr id="sim-columns">
               <th>Item</th>
               <th>Quantity</th>
               <th>Quote per unit</th>
@@ -178,8 +179,9 @@
       </div>
       <p id="sim-stock" class="estimated" hidden></p>
       <form id="sim-form">
+        <label id="sim-target-label" hidden>Finished pieces wanted<input id="sim-target" type="number" min="1" max="10000" step="1" required disabled /></label>
         <label
-          >Standard deviation (% of quote)<input
+          >Price deviation (% of quote)<input
             id="sim-volatility"
             type="number"
             value="10"
@@ -188,6 +190,7 @@
             step="any"
             required
         /></label>
+        <label id="sim-stock-spread-label" hidden>Stock deviation (% of listed stacks)<input id="sim-stock-spread" type="number" min="0" max="100" step="any" value="10" required disabled /></label>
         <label
           >Trials<input
             id="sim-trials"
@@ -229,7 +232,7 @@
         /></label>
         <button type="submit">Run simulation</button>
       </form>
-      <p class="hint">
+      <p class="hint" id="sim-assumptions">
         Each trial draws one independent normal price per auction item. The
         quote sets the center and the percentage sets the spread. Negative draws
         are sampled again.

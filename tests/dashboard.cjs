@@ -118,7 +118,11 @@ let fail = false,
   copied;
 const historicDay = (Math.floor(at / 86400) - 4) * 86400;
 let historyHits = 0;
+let orderBook = {1001: {source: "Blizzard Auction House", observed_at: at, available: 7, lots: [[1, 2, 4], [3, 15, 1]]}};
 w.fetch = async (url) => {
+  if (url === "/api/reagent-listings?items=1001") {
+    return {ok:true, json:async () => ({items:orderBook})};
+  }
   if (url.startsWith("/api/price-history?")) {
     historyHits++;
     const args = new URL(url, "http://localhost").searchParams;
@@ -173,6 +177,7 @@ w.Worker = class {
     this.thread = new Worker(
       'const {parentPort} = require("node:worker_threads");' +
         "const self = {postMessage: value => parentPort.postMessage(value)};\n" +
+        fs.readFileSync("web/shopping.js", "utf8") + "\n" +
         fs.readFileSync("web" + url, "utf8") +
         '\nparentPort.on("message", data => self.onmessage({data}));',
       { eval: true },
@@ -188,7 +193,7 @@ w.Worker = class {
   }
 };
 w.eval(
-  ["web/shopping.js", "web/history.js", "web/route.js", "web/app.js"]
+  ["web/shopping.js", "web/history.js", "web/route.js", "web/craft-order.js", "web/app.js"]
     .map((file) => fs.readFileSync(file, "utf8"))
     .join("\n"),
 );
@@ -373,6 +378,23 @@ async function runSimulation() {
   );
   assert.match(copied, /Batch profit per hour 0.75 g\/h/);
   assert.match(copied, /Ada/);
+  d.querySelector("[data-sim-order]").click();
+  assert.equal(d.querySelector("#sim-target").value, "2");
+  assert.equal(d.querySelector("#sim-gold").disabled, true);
+  d.querySelector("#sim-stock-spread").value = 0;
+  d.querySelector("#sim-volatility").value = 0;
+  const filledOrder = await runSimulation();
+  assert.match(filledOrder, /Median cost21c/);
+  assert.match(filledOrder, /5,000 \/ 5,000 \(100.0%\)/);
+  assert.match(d.querySelector("#sim-inputs").textContent, /7 units · Blizzard Auction House/);
+  d.querySelector("#sim-target").value = "3";
+  assert.match(await runSimulation(), /No trial could fill this order/);
+  orderBook = {1001: null};
+  d.querySelector("#sim-form button").click();
+  await wait();
+  assert.match(d.querySelector("#sim-status").textContent, /Fresh stack prices needed for Ore/);
+  assert.equal(d.querySelector("#sim-result").textContent, "");
+  dialog.close();
   d.querySelector("[data-sim-craft]").click();
   assert.match(d.querySelector("#sim-stock").textContent, /Ore needs 6/);
   const bankroll = d.querySelector("#sim-gold");

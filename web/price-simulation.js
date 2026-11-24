@@ -81,6 +81,161 @@ function quantile(sorted, fraction) {
   return sorted[lo] + (sorted[Math.ceil(index)] - sorted[lo]) * (index - lo);
 }
 
+function histogram(sorted) {
+  const low = sorted[0],
+    high = sorted[sorted.length - 1];
+  const bins = Array(low === high ? 1 : 20).fill(0);
+  for (const value of sorted) {
+    const index =
+      high === low
+        ? 0
+        : Math.floor(((value - low) / (high - low)) * bins.length);
+    bins[Math.min(index, bins.length - 1)]++;
+  }
+  return { low, high, bins };
+}
+
+// Auction price draws scale every tier together. Reuse mixed-stack combinations
+// when two trials need the same quantity and have the same usable stack counts.
+function reagentPricer(line) {
+  const lots = [...line.lots].sort(
+    (a, b) => a[1] / a[0] - b[1] / b[0] || a[0] - b[0],
+  );
+  const mixed = lots.some(([size]) => size !== lots[0][0]);
+  const cache = new Map();
+  return (runs, price, stock) => {
+    const need = runs * line.quantity;
+    if (!Number.isSafeInteger(need))
+      throw Error("Reagent quantity exceeds the supported range.");
+    const buy = quoteListedStacks(lots, need, price, stock, line.vendor);
+    if (!buy) return null;
+    let spend = buy.cost;
+    // Keep large baskets practical over thousands of trials by using the
+    // feasible cheapest-first quote when combination search would be expensive.
+    if (mixed && lots.length * need <= 10000) {
+      const scaled = lots.map(([size, ask, count]) => [
+        size,
+        ask,
+        Math.min(Math.ceil(need / size), Math.round(count * stock)),
+      ]);
+      const key = need + "/" + scaled.map((lot) => lot[2]).join(",");
+      if (!cache.has(key)) {
+        if (cache.size >= 32) cache.delete(cache.keys().next().value);
+        cache.set(key, stackCombinations(scaled, need, 10000)?.costs);
+      }
+      const costs = cache.get(key);
+      if (costs) {
+        spend = Math.min(spend, costs[need] * price);
+        if (line.vendor != null) {
+          for (let n = 1; n < need; n++)
+            spend = Math.min(
+              spend,
+              costs[n] * price + (need - n) * line.vendor,
+            );
+        }
+      }
+    }
+    const copper = Math.ceil(spend);
+    if (!Number.isSafeInteger(copper))
+      throw Error("Reagent cost exceeds the supported copper range.");
+    return copper;
+  };
+}
+
+function simulateCraftOrder(model, trials, priceSpread, random) {
+  const { target, stockSpread, lines } = model;
+  const { min, max, base } = model.yield;
+  if (
+    !Number.isInteger(target) ||
+    target < 1 ||
+    target > 10000 ||
+    !Number.isFinite(stockSpread) ||
+    stockSpread < 0 ||
+    stockSpread > 100 ||
+    ![min, max, base].every(
+      (n) => Number.isSafeInteger(n) && n >= 1 && n <= 4294967295,
+    ) ||
+    min > max
+  )
+    throw Error(
+      "Use 1–10,000 finished pieces, a valid craft yield and a stock deviation from 0% to 100%.",
+    );
+  // Stock is listing count per price tier. Recipe ingredients per cast stay fixed.
+  const normal = normalSampler(random);
+  function priceFactor() {
+    if (!priceSpread) return 1;
+    let factor;
+    do {
+      factor = 1 + (normal() * priceSpread) / 100;
+    } while (factor <= 0);
+    return factor;
+  }
+  const prices = lines.map(reagentPricer);
+  const plannedRuns = Math.ceil(target / Math.min(max, Math.max(min, base)));
+  const quoted = prices.map((quote) => quote(plannedRuns, 1, 1));
+  const sum = (values) => {
+    const value = values.reduce((a, b) => a + b, 0);
+    if (!Number.isSafeInteger(value))
+      throw Error("Order cost exceeds the supported copper range.");
+    return value;
+  };
+  const current = quoted.some((n) => n == null) ? null : sum(quoted);
+  const shortages = lines.map(() => 0);
+  const costs = [];
+  let runTotal = 0,
+    average = 0;
+  for (let t = 0; t < trials; t++) {
+    let runs = Math.ceil(target / min);
+    if (min !== max) {
+      runs = 0;
+      let produced = 0;
+      while (produced < target) {
+        produced += min + Math.floor(random() * (max - min + 1));
+        runs++;
+      }
+    }
+    runTotal += runs;
+    let full = true,
+      total = 0;
+    for (const [j, line] of lines.entries()) {
+      const auction = line.lots.length > 0;
+      const stock =
+        auction && stockSpread
+          ? Math.max(0, 1 + (normal() * stockSpread) / 100)
+          : 1;
+      const cost = prices[j](runs, auction ? priceFactor() : 1, stock);
+      if (cost == null) {
+        shortages[j]++;
+        full = false;
+      } else total += cost;
+    }
+    if (full) {
+      if (!Number.isSafeInteger(total))
+        throw Error("Order cost exceeds the supported copper range.");
+      costs.push(total);
+      average += (total - average) / costs.length;
+    }
+  }
+  costs.sort((a, b) => a - b);
+  const result = {
+    filled: costs.length,
+    target,
+    current,
+    plannedRuns,
+    runs: runTotal / trials,
+    shortages,
+  };
+  if (costs.length)
+    Object.assign(result, histogram(costs), {
+      average,
+      median: quantile(costs, 0.5),
+      p5: quantile(costs, 0.05),
+      p95: quantile(costs, 0.95),
+      chartMetric: "Reagent cost",
+    });
+  return result;
+}
+
 // Full Kelly maximizes mean(log(1 + fraction * return)) for one route.
 // Its derivative decreases with the fraction, so bisection finds the maximum.
 function kellyFraction(returns) {
@@ -178,6 +333,7 @@ function simulatePrices(model, trials, volatility, random = Math.random) {
       "Use 100–50,000 trials and a standard deviation from 0% to 100%.",
     );
   }
+  if (model.order) return simulateCraftOrder(model, trials, volatility, random);
   const normal = normalSampler(random);
   const auctionLines = model.lines.filter((line) => line.source !== "vendor");
   const vendorPerRun = model.lines.reduce(
@@ -254,24 +410,12 @@ function simulatePrices(model, trials, volatility, random = Math.random) {
   units?.sort();
   profits?.sort();
   const chart = variable && profits ? profits : outcomes;
-  const low = chart[0],
-    high = chart[trials - 1];
-  const bins = Array(low === high ? 1 : 20).fill(0);
-  for (const cost of chart) {
-    const bin =
-      high === low
-        ? 0
-        : Math.floor(((cost - low) / (high - low)) * bins.length);
-    bins[Math.min(bin, bins.length - 1)]++;
-  }
   return {
     average,
     p5: quantile(outcomes, 0.05),
     median: quantile(outcomes, 0.5),
     p95: quantile(outcomes, 0.95),
-    low,
-    high,
-    bins,
+    ...histogram(chart),
     chartMetric:
       chart === profits
         ? "Batch profit"
@@ -300,6 +444,8 @@ function simulatePrices(model, trials, volatility, random = Math.random) {
 
 self.onmessage = ({ data: { model, trials, volatility } }) => {
   try {
+    if (model.order && typeof quoteListedStacks !== "function")
+      importScripts("/shopping.js");
     self.postMessage({ result: simulatePrices(model, trials, volatility) });
   } catch (error) {
     self.postMessage({ error: error.message });

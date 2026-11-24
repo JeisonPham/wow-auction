@@ -219,6 +219,18 @@ For an existing portable bundle, use `python3 client/sync.py sync --bundle scan.
 
 ## Simulate auction house reagent prices
 
+### Estimate reagent cost for a finished quantity
+
+Open a craft in **Opportunities** or **Professions**, choose **Estimate cost for a quantity**, and enter **Finished pieces wanted** (1–10,000). For example, enter 20 for twenty pieces of Heavy Dynamite. Every trial rolls the recipe’s output per cast until enough pieces have been produced. Chained routes use the displayed raw reagents per final cast and the plan’s expected intermediate yields.
+
+Each run fetches the newest fresh in-game or Blizzard listing snapshot for each reagent. The input table shows the source, observation time, available units, lowest ask and any vendor price. A snapshot with zero stock can yield a shortage. A missing or stale snapshot needs a new scan unless a vendor can supply the reagent.
+
+Set the two spreads independently. The defaults use a 10% standard deviation for auction prices and listed stack counts, with 5,000 trials. Each trial draws a price multiplier and a stock multiplier per reagent and applies them across its price tiers. Prices use positive normal draws. Stock counts are rounded to whole stacks and floored at zero. Purchases take cheaper tiers first, compare the cost of a larger finishing stack, and use a fixed-price vendor when cheaper or needed to fill the order. Set both spreads to zero to keep the observed market fixed. Recipe output still varies when its minimum and maximum differ.
+
+For small orders with mixed stack sizes, the estimator compares stack combinations. For large orders, it estimates the spend using the cheapest unit prices first. Results show the cost at current listings for the planned number of casts, the fraction of trials with enough reagents, and which reagents ran short. The median, middle 90% range and 95th-percentile budget cover **only orders that could be filled**. Costs cover purchasing reagents and exclude postage. You can query the underlying lots using `GET /api/reagent-listings?items=2592,2838`. Each lot contains the stack size, its full buyout in copper and the number of available stacks.
+
+### Simulate a fixed number of crafts or a unit price
+
 In **Market prices**, expand a reagent and select **Simulate unit price**. In **Professions**, open a craft, set its batch size and mailing options, and select **Simulate craft batch**. The simulation opens with the prices shown in that report. Reopen it after a refresh to use newer quotes.
 
 Choose a standard deviation and a trial count, then click **Run simulation**. The defaults are 10% of each unit quote and 5,000 trials. The spread is your assumption about price variability. Each trial draws independently from a normal distribution centered on each auction quote and redraws negative prices. At high volatility this raises the simulated mean above the quote. The report shows the mean, median, 5th–95th percentile range, and distribution of simulated outcomes.

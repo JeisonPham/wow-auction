@@ -667,8 +667,11 @@ function craftSimulationButton(route) {
   return '<button class="sim-launch" aria-haspopup="dialog" data-sim-craft>Simulate craft batch</button>';
 }
 
-let simulationModel, simulationWorker;
+let simulationModel, simulationWorker, listingRequest;
+const defaultSimAssumptions = $("sim-assumptions").textContent;
 function clearSimulation() {
+  listingRequest?.abort();
+  listingRequest = null;
   simulationWorker?.terminate();
   simulationWorker = null;
   $("sim-result").replaceChildren();
@@ -693,8 +696,11 @@ function openSimulation(name, model, shortages, at) {
   clearSimulation();
   simulationModel = model;
   $("sim-title").textContent =
-    name + (model.unitOnly ? " · Unit price" : " · Craft batch");
-  $("sim-context").textContent = model.unitOnly
+    name + (model.order ? " · Crafting cost" : model.unitOnly ? " · Unit price" : " · Craft batch");
+  $("sim-context").textContent = model.order
+    ? "Enter the number of finished pieces you want. Each trial rolls the output of each cast until it reaches your target. Every whole number in the yield range is equally likely." +
+      (model.chained ? " Intermediate steps use the route’s planned inputs and expected yields." : "")
+    : model.unitOnly
     ? "Monte Carlo simulation using the quote from " + timestamp(at) + "."
     : "Monte Carlo simulation for " +
       model.batch.toLocaleString() +
@@ -720,7 +726,17 @@ function openSimulation(name, model, shortages, at) {
       ? (saved.yieldRanges?.[model.yield.key]?.[bound] ?? model.yield[bound])
       : "";
   }
-  $("sim-inputs").innerHTML = model.lines
+  $("sim-target-label").hidden = $("sim-target").disabled = !model.order;
+  $("sim-stock-spread-label").hidden = $("sim-stock-spread").disabled = !model.order;
+  $("sim-target").value = model.order ? model.target : "";
+  $("sim-stock-spread").value = saved.simulation?.stockSpread ?? 10;
+  $("sim-columns").innerHTML = (model.order
+    ? ["Reagent", "Per cast", "Auction listings", "Vendor / unit"]
+    : ["Item", "Quantity", "Quote per unit", "Source"]).map(label => "<th>" + label + "</th>").join("");
+  $("sim-assumptions").textContent = model.order
+    ? "Prices and listed stack counts vary independently around the newest fresh in-game or Blizzard snapshot. Each reagent gets its own normal price and stock draws. Purchases use whole stacks, cheapest per unit first, and can use a vendor at a fixed price. Reagent cost excludes postage."
+    : defaultSimAssumptions;
+  $("sim-inputs").innerHTML = model.order ? orderInputTable(model.lines) : model.lines
     .map(
       (line) =>
         "<tr><td>" +
@@ -752,6 +768,7 @@ function openSimulation(name, model, shortages, at) {
   $("sim-gold-label").hidden = $("sim-gold").disabled = !canSize;
   $("sim-gold").value = canSize ? (saved.simulation?.gold ?? "") : "";
   $("simulation").showModal();
+  if (model.order) $("sim-target").focus();
 }
 function simulationStats(stats) {
   return (
@@ -803,7 +820,13 @@ function kellyResults(k, batch) {
   );
 }
 function showSimulationResults(result, trials) {
-  const { average, median, p5, p95, low, high, bins, profitChance } = result;
+  $("sim-status").textContent = trials.toLocaleString() + " trials completed.";
+  if (simulationModel.order) {
+    $("sim-result").innerHTML = orderResults(result, trials, simulationModel.lines);
+    $("sim-status").scrollIntoView?.({ block: "start" });
+    return;
+  }
+  const { average, median, p5, p95, profitChance } = result;
   const metric = simulationModel.unitOnly ? "unit price" : "batch cost";
   const stats = [
     ["Mean " + metric, money(average)],
@@ -836,17 +859,19 @@ function showSimulationResults(result, trials) {
   }
   if (result.goldPerHour != null)
     stats.push(["Mean batch gold/hour", hourly(result.goldPerHour)]);
-  const peak = Math.max(...bins);
   $("sim-result").innerHTML =
     (result.kelly
       ? kellyResults(result.kelly, simulationModel.batch) +
         "<h3>Simulated batch</h3>"
       : "") +
-    simulationStats(stats) +
-    (low === high
+    simulationStats(stats) + simulationDistribution(result);
+}
+function simulationDistribution({ low, high, bins, chartMetric }) {
+  const peak = Math.max(...bins);
+  return low === high
       ? ""
       : "<p>" +
-        result.chartMetric +
+        chartMetric +
         " distribution</p>" +
         '<div class="sim-bars" aria-hidden="true">' +
         bins
@@ -869,8 +894,7 @@ function showSimulationResults(result, trials) {
         money(low) +
         "</span><span>Max " +
         money(high) +
-        "</span></div>");
-  $("sim-status").textContent = trials.toLocaleString() + " trials completed.";
+        "</span></div>";
 }
 $("sim-close").onclick = () => $("simulation").close();
 $("simulation").onclose = () => {
@@ -878,7 +902,7 @@ $("simulation").onclose = () => {
   simulationModel = null;
 };
 $("sim-form").oninput = clearSimulation;
-$("sim-form").onsubmit = (event) => {
+$("sim-form").onsubmit = async (event) => {
   event.preventDefault();
   if (!$("sim-form").reportValidity() || !simulationModel) return;
   clearSimulation();
@@ -909,8 +933,30 @@ $("sim-form").onsubmit = (event) => {
     }
   }
   saved.simulation = { ...saved.simulation, volatility, trials };
+  if (model.order) {
+    model.target = $("sim-target").valueAsNumber;
+    model.stockSpread = $("sim-stock-spread").valueAsNumber;
+    saved.simulation.stockSpread = model.stockSpread;
+  }
   if (!gold.disabled) saved.simulation.gold = gold.value;
   save();
+  if (model.order) {
+    $("sim-status").textContent = "Loading current reagent listings…";
+    $("sim-inputs").innerHTML = orderInputTable(model.lines);
+    const request = new AbortController();
+    listingRequest = request;
+    try {
+      model.lines = await loadOrderListings(model.lines, request.signal);
+    } catch (error) {
+      if (!request.signal.aborted)
+        $("sim-status").textContent = error instanceof TypeError
+          ? "Listings could not be loaded. Run again to retry." : error.message;
+      return;
+    } finally {
+      if (listingRequest === request) listingRequest = null;
+    }
+    if (request.signal.aborted) return;
+  }
   $("sim-status").textContent = "Running simulation…";
   try {
     const worker = new Worker("/price-simulation.js");
@@ -1285,6 +1331,9 @@ main.onclick = async (e) => {
       [],
       item.estimate_at,
     );
+  } else if (btn.hasAttribute("data-sim-order")) {
+    const { i, r } = rows[Number(btn.closest(".route").dataset.idx)];
+    openSimulation(i.name, craftOrderModel(i, r, calc(i, r)), [], report.generated_at);
   } else if (btn.hasAttribute("data-sim-craft")) {
     const el = btn.closest(".route");
     const { i, r } = rows[Number(el.dataset.idx)];
