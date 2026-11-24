@@ -114,7 +114,23 @@ items[6].routes = [
 ];
 let fail = false,
   copied;
-w.fetch = async () => {
+const historicDay = (Math.floor(at / 86400) - 4) * 86400;
+let historyHits = 0;
+w.fetch = async (url) => {
+  if (url.startsWith("/api/price-history?")) {
+    historyHits++;
+    const args = new URL(url, "http://localhost").searchParams;
+    const marketItem = args.get("items") === "1001";
+    if (!marketItem) assert.equal(args.get("items"), "1001:3");
+    assert.equal(args.get("floor"), marketItem ? null : "0");
+    const rows = [];
+    for (let day = 0; day < 3; day++) {
+      rows.push([historicDay + day*86400 + 8*3600, 3, 9],
+                [historicDay + day*86400 + 18*3600, 8, 24]);
+    }
+    return {ok: true, json: async () => ({days: 28, items: {1001: rows}})};
+  }
+
   if (fail) throw Error("Offline");
   return {
     ok: true,
@@ -167,7 +183,7 @@ w.Worker = class {
   }
 };
 w.eval(
-  ["web/shopping.js", "web/app.js"]
+  ["web/shopping.js", "web/history.js", "web/app.js"]
     .map((file) => fs.readFileSync(file, "utf8"))
     .join("\n"),
 );
@@ -501,6 +517,42 @@ async function runSimulation() {
   await wait();
   assert.match(d.querySelector(".route").textContent, /fresh listing scan/);
   assert.equal(d.querySelector("[data-tsm]"), null);
+  ore.purchase_depth = {source: "Blizzard Auction House", observed_at: at,
+    available: 10, levels: [[5,3,1], [10,8,1]]};
+  d.querySelector("#refresh").click();
+  await wait();
+  filter("profitability", "");
+  filter("pricing", "percentile");
+  assert.equal(d.querySelector("#floorLabel").hidden, false);
+  assert.equal(d.querySelector("#body tr td:nth-child(4)").textContent, "91c");
+  assert.match(d.querySelector(".route").textContent, /P30 · 10 units listed · Blizzard/);
+  d.querySelector("[data-history]").click();
+  await wait();
+  assert.equal(historyHits, 1);
+  assert.match(d.querySelector(".route").textContent, /08:00 UTC · 9c median per batch/);
+  assert.match(d.querySelector(".route").textContent, /Sell · Any hour · 1s 0c at vendor prices/);
+  assert.match(d.querySelector(".route").textContent, /Hourly medians and sampled days/);
+  d.querySelector("[data-sim-craft]").click();
+  assert.match(d.querySelector("#sim-inputs").textContent, /P30 · Blizzard/);
+  dialog.close();
+  filter("batchSize", "2");
+  assert.equal(d.querySelector("#body tr td:nth-child(4)").textContent, "76c");
+  assert.match(d.querySelector(".route").textContent, /P60 · 10 units/);
+  filter("batchSize", "1");
+  filter("floor", "90");
+  assert.match(d.querySelector(".route").textContent, /P90 · 10 units/);
+  filter("batchSize", "4");
+  assert.equal(d.querySelector("#body tr td:nth-child(4)").textContent, "Unknown");
+  assert.match(d.querySelector(".route").textContent, /Insufficient supply/);
+  assert.equal(d.querySelector("[data-tsm]"), null);
+  w.location.hash = "#market";
+  await wait();
+  filter("search", "1001");
+  d.querySelector(".rowname").click();
+  d.querySelector("[data-history]").click();
+  await wait();
+  assert.match(d.querySelector(".detail").textContent, /Lowest unit price · 08:00 UTC · 3c median per unit/);
+  assert.match(d.querySelector(".detail").textContent, /Highest unit price · 18:00 UTC · 8c median per unit/);
   console.log(
     "Dashboard search, pagination, profit filters, routes, batch shortage, postage, clipboard and offline retention passed",
   );

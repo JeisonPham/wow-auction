@@ -109,6 +109,41 @@ pub struct Bundle {
     #[serde(default)]
     pub targeted: Vec<Capture>,
 }
+/// Latest local stock coverage, including a completed search or full scan with no listings.
+pub(crate) struct MarketChecks<'a> {
+    full: Option<(u64, &'a Book)>,
+    targeted: Map<u32, (u64, Option<&'a Price>)>,
+}
+impl<'a> MarketChecks<'a> {
+    pub fn new(bundle: Option<&'a Bundle>, now: u64, age: u64) -> Self {
+        let full = bundle
+            .map(|b| &b.snapshot)
+            .filter(|s| crate::fresh(s.newest_price_at, now, age))
+            .map(|s| (s.newest_price_at, &s.prices));
+        let mut targeted = Map::new();
+        for cap in bundle.into_iter().flat_map(|b| &b.targeted) {
+            for &id in cap.listed_units.keys() {
+                let at = cap.time_for(id);
+                if crate::fresh(at, now, age)
+                    && full.is_none_or(|(t, _)| at >= t)
+                    && targeted.get(&id).is_none_or(|(previous, _)| at > *previous)
+                {
+                    targeted.insert(id, (at, cap.prices.get(&id)));
+                }
+            }
+        }
+        Self { full, targeted }
+    }
+    pub fn get(&self, id: u32) -> Option<(u64, Option<&'a Price>, &'static str)> {
+        self.targeted
+            .get(&id)
+            .map(|&(at, p)| (at, p, "In-game item check"))
+            .or_else(|| {
+                self.full
+                    .map(|(at, book)| (at, book.get(&id), "In-game full scan"))
+            })
+    }
+}
 fn check(ok: bool, msg: &str) -> Result<()> {
     if ok {
         Ok(())

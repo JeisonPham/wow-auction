@@ -1,9 +1,9 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const vm = require("node:vm");
-const { indexListings, quoteShoppingBatch, quoteStacks } = vm.runInNewContext(
+const { indexListings, quoteShoppingBatch, quoteStacks, percentilePurchase, percentileInput } = vm.runInNewContext(
   fs.readFileSync("web/shopping.js", "utf8") +
-    ";({indexListings, quoteShoppingBatch, quoteStacks})",
+    ";({indexListings, quoteShoppingBatch, quoteStacks, percentilePurchase, percentileInput})",
 );
 const ore = {
   id: 1,
@@ -104,6 +104,21 @@ assert.equal(
   ).cost,
   11,
 );
+const depth = {source: "In-game item check", observed_at: 100, available: 10, levels: [[8, 3, 2], [10, 11, 1]]};
+assert.equal(percentilePurchase(depth, 8, 0).budget, 12);
+assert.equal(percentilePurchase(depth, 1, 90).budget, 11);
+assert.equal(percentilePurchase(depth, 9, 0).budget, 99);
+assert.equal(percentilePurchase(depth, 11, 0).status, "insufficient");
+const material = {quantity: 1, source: "estimate"};
+const entry = {purchase_depth: depth, estimate: 4, vendor_buy: 5};
+const input = (n, cutoff = 90, data = entry) => percentileInput(material, data, n, 0, cutoff, true);
+assert.equal(input(3).purchase_budget, 5); // Round once across the batch.
+assert.equal(input(9).source, "vendor");
+assert.equal(input(11).purchase_budget, 55);
+assert.equal(input(11, 90, {...entry, vendor_buy: null}).purchase_budget, null);
+assert.equal(input(6, 101).source, "estimate");
+assert.equal(input(2, 90, {...entry, auctionable: false}).source, "vendor");
+assert.equal(input(2, 90, {...entry, auctionable: false, vendor_buy: null}).source, "bound");
 console.log(
   "Whole-stack and commodity pricing, shared TSM budget, auction and disenchant exits, expiry and stock checks passed.",
 );

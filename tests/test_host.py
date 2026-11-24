@@ -159,6 +159,58 @@ class HostTests(unittest.TestCase):
             r["scan_queue"],
         )
 
+    def test_purchase_depth_and_hourly_history_without_dashboard_requests(self):
+        now = int(time.time())
+        # Two daily windows across three complete days, uploaded without any dashboard visits.
+        day = (now // 86400 - 4) * 86400
+        ore, legacy, absent = (810001, 810002, 810003)
+        def upload(revision, at, base):
+            lots = [[5, base * 5, 2], [1, base, 70], [1, 10 * base, 20]]
+            prices = {ore: dict(total_buyout=280 * base, units=100, auctions=92,
+                                observed_at=at, lots=lots),
+                      legacy: dict(total_buyout=30, units=10, auctions=1, observed_at=at)}
+            bundle = dict(version=1, revision=revision, region="Forever-US", market="Normal-Alliance",
+                          snapshot={}, targeted=[dict(captured_at=at, prices=prices,
+                            listed_units={ore: 100, legacy: 10, absent: 0})])
+            res = self.req("/api/scans", gzip.compress(json.dumps(bundle).encode()), self.token,
+                           headers={"Content-Type": "application/gzip"})
+            self.assertEqual(res[0], 202, res[1])
+        for d in range(3):
+            for k, (h, price) in enumerate(((8, 2), (18, 7))):
+                upload(2*d+k+1, day+d*86400+h*3600, price)
+        upload(7, now, 2)
+        upload(7, now, 2)
+        self.stop()
+        self.start()
+
+        def quote(item, need, floor=0):
+            code, data, _ = self.req(f"/api/purchase-quote?item={item}&quantity={need}&floor={floor}")
+            self.assertEqual(code, 200, data)
+            return json.loads(data)
+
+        for need, floor, rank, unit in [(1, 0, 1, 2), (80, 0, 80, 2), (81, 0, 81, 20),
+                                         (1, 90, 90, 20), (100, 0, 100, 20)]:
+            q = quote(ore, need, floor)
+            self.assertEqual((q["status"], q["source"], q["available"], q["rank"], q["unit_price"], q["budget"]),
+                             ("priced", "In-game item check", 100, rank, unit, unit * need))
+        self.assertEqual(quote(ore, 101)["status"], "insufficient")
+        self.assertEqual(quote(legacy, 1)["status"], "no_price_levels")
+        self.assertEqual(quote(absent, 1)["available"], 0)
+        self.assertEqual(quote(810100, 1)["status"], "no_depth")
+        for args in ("item=0&quantity=1", "item=1&quantity=0", "item=1&quantity=2&floor=101"):
+            self.assertEqual(self.req("/api/purchase-quote?" + args)[0], 400)
+        def series(need, floor):
+            data = json.loads(self.req(f"/api/price-history?items={ore}:{need},{legacy}&floor={floor}")[1])
+            self.assertEqual((data["timezone"], data["days"]), ("UTC", 28))
+            return data["items"][str(ore)]
+        hourly = series(80, 0)
+        self.assertEqual(len(hourly), 7)
+        self.assertEqual(hourly[:2], [[day+8*3600, 5.6, 160], [day+18*3600, 19.6, 560]])
+        self.assertEqual(series(81, 0)[0][2], 1620)
+        self.assertIsNone(series(101, 0)[0][2])
+        self.assertEqual(series(1, 90)[0][2], 20)
+        self.assertEqual(self.req("/api/price-history?items=1,1")[0], 400)
+
     def test_broker_import_and_freshness(self):
         at = int(time.time()) - 10
         url = "/api/bootybay/prices"
@@ -310,6 +362,12 @@ with patch.object(blizzard, "build_opener") as opener:
                 self.assertEqual((i["estimate"], i["estimate_source"], i["estimate_at"]),
                                  (expected, "Blizzard Auction House", at))
                 self.assertIsNone(i["lots"])
+                quote = json.loads(self.req(f"/api/purchase-quote?item={item_id}&quantity=1")[1])
+                self.assertEqual((quote["source"], quote["available"], quote["unit_price"], quote["budget"]),
+                                 ("Blizzard Auction House", 20 if item_id == 2840 else 2,
+                                  expected, 13 if item_id == 2840 else 8))
+                hourly = json.loads(self.req(f"/api/price-history?items={item_id}&floor=0")[1])
+                self.assertEqual(hourly["items"][str(item_id)][0][2], quote["budget"])
             if denied:
                 bundle = dict(region="Forever-US", market="Normal-Alliance", revision=1, version=1,
                               snapshot=dict(newest_price_at=at+1, prices={"2840":dict(
@@ -318,6 +376,51 @@ with patch.object(blizzard, "build_opener") as opener:
                                           headers={"Content-Type":"application/gzip"})[0], 202)
                 copper = next(i for i in json.loads(self.req("/api/report")[1])["items"] if i["id"] == 2840)
                 self.assertEqual((copper["estimate"], copper["estimate_source"]), (15, "In-game full scan"))
+                q = json.loads(self.req("/api/purchase-quote?item=2840&quantity=1")[1])
+                self.assertEqual((q["source"], q["available"], q["status"]), ("In-game full scan", 2, "no_price_levels"))
+            self.stop()
+
+    def test_blizzard_legacy_cache_conditional_empty_and_hourly_retention(self):
+        self.stop()
+        at = int(time.time()) - 120
+        home = Path(self.temp.name)
+        scope = dict(region="Forever-US", market="Normal-Alliance")
+        # Start from the previous release's price-only cache.
+        cache = home / "blizzard-Forever-US-Normal-Alliance.json"
+        cache.write_text(json.dumps(dict(scope, modified=[at-20, at-20],
+                                         items={"2840": dict(total=9, units=1, at=at-20)})))
+        fixture = home / "blizzard_fixture.py"
+        fixture.write_text(f"""import json, os, sys
+times = list(map(int, sys.argv[3:]))
+if not os.getenv("EMPTY"):
+    assert times == [0, 0], times
+    data = dict(modified=[{at},{at}], items={{"14047": dict(total=13, units=1, at={at}),
+                                             "2840": dict(total=10, units=1, at={at})}},
+                depth=[{{"14047":[[1,13,4]]}},{{"2840":[[1,10,5]]}}])
+else:
+    assert times == [{at}, {at}], times
+    data = dict(modified=[{at},{at+45}], items={{}}, depth=[None, {{}}])
+print(json.dumps(dict(region=sys.argv[1], market=sys.argv[2], **data)))
+""")
+        settings = dict(WOW_BLIZZARD_CLIENT_ID="fixture", WOW_BLIZZARD_CLIENT_SECRET="fixture",
+                        WOW_BLIZZARD_PYTHON=sys.executable, WOW_BLIZZARD_HELPER=str(fixture))
+        for empty in ("", "1"):
+            self.start(**settings, EMPTY=empty)
+            for _ in range(40):
+                status = json.loads(self.req("/api/status")[1])["blizzard"]
+                if status["last_pull_at"]:
+                    break
+                time.sleep(0.1)
+            self.assertIsNotNone(status["last_pull_at"])
+            self.assertIsNone(status["error"])
+            def quote(item):
+                return json.loads(self.req(f"/api/purchase-quote?item={item}&quantity=1")[1])
+            self.assertEqual(quote(14047)["available"], 4)
+            q = quote(2840)
+            self.assertEqual((q["available"], q["observed_at"]), (0, at+45) if empty else (5, at))
+            if empty:
+                history = json.loads(self.req("/api/price-history?items=2840&floor=0")[1])
+                self.assertEqual(history["items"]["2840"][-1][1:], [None, None])
             self.stop()
 
     def test_server_fetches_without_client_then_client_uploads_real_lots(self):

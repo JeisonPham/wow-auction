@@ -68,6 +68,7 @@ def collect(items, page, commodities, at, house):
     rows = page.get("auctions", [])
     if not isinstance(rows, list):
         raise ValueError("Invalid Blizzard auctions array")
+    lots = {}
     for row in rows:
         if not isinstance(row, dict) or not isinstance(row.get("item"), dict):
             raise ValueError("Invalid Blizzard listing")
@@ -85,10 +86,15 @@ def collect(items, page, commodities, at, house):
         if not positive(total) or not positive(quantity):
             raise ValueError("Invalid Blizzard buyout or quantity")
         units = 1 if commodities else quantity
+        levels = lots.setdefault(item_id, {})
+        key = (units, total)
+        levels[key] = levels.get(key, 0) + (quantity if commodities else 1)
         old = items.get(item_id)
         if (old is None or at > old["at"] or
                 (at == old["at"] and total * old["units"] < old["total"] * units)):
             items[item_id] = dict(total=total, units=units, at=at)
+    return {item_id: [[size, price, count] for (size, price), count in levels.items()]
+            for item_id, levels in lots.items()}
 
 
 def fetch(region, market, modified, opener):
@@ -106,6 +112,7 @@ def fetch(region, market, modified, opener):
         raise ValueError("Blizzard did not return a usable access token")
     stamps = list(modified)
     items = {}
+    depth = [None, None]
     for index, suffix in enumerate(("", "/commodities")):
         url = (f"https://{host}.api.blizzard.com/data/wow/ruleset/{rule}/auctions/{house}{suffix}"
                f"?namespace=dynamic-forever-{host}")
@@ -126,9 +133,9 @@ def fetch(region, market, modified, opener):
             at = int(parsedate_to_datetime(stamp).timestamp())
             if at < modified[index] or not 0 < at <= time.time() + 300:
                 raise ValueError("Invalid or older Blizzard snapshot timestamp")
-            collect(items, read_json(response, 128 << 20), bool(index), at, house)
+            depth[index] = collect(items, read_json(response, 128 << 20), bool(index), at, house)
             stamps[index] = at
-    return dict(region=region, market=market, modified=stamps, items=items)
+    return dict(region=region, market=market, modified=stamps, items=items, depth=depth)
 
 
 def main():

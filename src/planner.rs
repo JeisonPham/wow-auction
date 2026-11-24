@@ -16,6 +16,7 @@ struct Quote<'a> {
     latest: Option<Observation>,
     fresh_price: bool,
     check: Option<&'a Price>,
+    market_floor: Option<(u64, u64)>,
     at: Option<u64>,
 }
 impl Quote<'_> {
@@ -27,7 +28,9 @@ impl Quote<'_> {
         self.at.map(|_| self.check.map_or(0, |p| p.units))
     }
     fn listed_below(&self, unit_value: u64) -> bool {
-        self.check.is_some_and(|p| {
+        self.market_floor.is_some_and(|(total, size)| {
+            u128::from(total) < u128::from(unit_value) * u128::from(size)
+        }) || self.check.is_some_and(|p| {
             p.lots.iter().any(|&[size, price, _]| {
                 u128::from(price) < u128::from(unit_value) * u128::from(size)
             })
@@ -167,6 +170,7 @@ pub fn report(
         now,
         raw,
         false,
+        |_| None,
     )
 }
 pub fn market_report(
@@ -197,6 +201,7 @@ pub fn market_report_with_broker(
         &Prices::default().resolve(b, feed, broker),
         age,
         now,
+        |_| None,
     )
 }
 #[allow(clippy::too_many_arguments)]
@@ -209,6 +214,7 @@ pub(crate) fn market_report_with_prices(
     latest: &Prices,
     age: u64,
     now: u64,
+    market_floor: impl FnMut(u32) -> Option<(u64, u64)>,
 ) -> Value {
     let empty = Snapshot::default();
     let player = b.map_or(&empty, |b| &b.snapshot);
@@ -216,7 +222,17 @@ pub(crate) fn market_report_with_prices(
     let merged = cat.for_player(player);
     let bundled_de = player.disenchant.is_empty() || player.non_disenchantable.is_none();
     let mut r = plan(
-        region, market, b, feed, broker, latest, age, now, &merged, bundled_de,
+        region,
+        market,
+        b,
+        feed,
+        broker,
+        latest,
+        age,
+        now,
+        &merged,
+        bundled_de,
+        market_floor,
     );
     r["catalog"] = json!({"build":cat.build,"recipes":merged.recipes.len(),"items":merged.items.len(),
         "characters":merged.professions.len(),"desktop_at":player.estimate_at,
@@ -235,6 +251,7 @@ fn plan(
     now: u64,
     s: &Snapshot,
     bundled_de: bool,
+    mut market_floor: impl FnMut(u32) -> Option<(u64, u64)>,
 ) -> Value {
     let empty = Snapshot::default();
     let obs = b.map_or(&empty, |b| &b.snapshot);
@@ -243,21 +260,9 @@ fn plan(
     let est_at = if desktop { obs.estimate_at } else { feed.at };
     let active = fresh(est_at, now, age);
     let mut ids: Set<_> = s.items.keys().chain(latest.0.keys()).copied().collect();
-    let full = fresh(obs.newest_price_at, now, age);
-    let mut target = Map::new();
-    if let Some(b) = b {
-        for c in &b.targeted {
-            for &id in c.listed_units.keys() {
-                ids.insert(id);
-                let at = c.time_for(id);
-                if fresh(at, now, age)
-                    && (!full || at >= obs.newest_price_at)
-                    && target.get(&id).is_none_or(|(previous, _)| at > *previous)
-                {
-                    target.insert(id, (at, c.prices.get(&id)));
-                }
-            }
-        }
+    let checks = MarketChecks::new(b, now, age);
+    for c in b.into_iter().flat_map(|b| &b.targeted) {
+        ids.extend(c.listed_units.keys());
     }
     if bundled_de {
         for drops in crate::catalog::FOREVER.overrides.values() {
@@ -276,13 +281,9 @@ fn plan(
         let item = s.items.get(&id);
         let public = feed.items.get(&id);
         let price = latest.0.get(&id).copied();
-        let (at, check) = if let Some(&(at, price)) = target.get(&id) {
-            (Some(at), price)
-        } else if full {
-            (Some(obs.newest_price_at), obs.prices.get(&id))
-        } else {
-            (None, None)
-        };
+        let (at, check) = checks
+            .get(id)
+            .map_or((None, None), |(at, p, _)| (Some(at), p));
         let name = item
             .map(|i| &i.name)
             .filter(|n| !n.is_empty())
@@ -295,6 +296,7 @@ fn plan(
                 name,
                 item,
                 latest: price,
+                market_floor: market_floor(id),
                 fresh_price: price.is_some_and(|p| fresh(p.at, now, age)),
                 check,
                 at,
@@ -583,6 +585,7 @@ fn plan(
                 "estimate_at": q.latest.map(|p| p.at),
                 "estimate_source": q.latest.map(|p| p.source.label()),
                 "estimate_stale": q.latest.is_some() && !q.fresh_price,
+                "auctionable": !q.bound(),
                 "estimated_auctions": q.latest.and_then(|p| p.auctions),
                 "broker_price": broker.items.get(&id),
                 "checked_price": q.check.map(|p| p.total_buyout as f64 / p.units as f64),

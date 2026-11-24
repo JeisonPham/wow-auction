@@ -112,7 +112,7 @@ Point your domain’s DNS at the server. On that host, configure your HTTPS reve
 
 The bundled scanner stores the accepted snapshot at `/data/scan-upload.json.gz` inside the `dashboard-data` Docker volume and restores it after a restart. Keep the same Compose project name when updating to reuse the volume. **Last upload** shows the server receipt time. **Estimate age** tracks the TSM estimate timestamp.
 
-Set `WOW_PORT` in the server's `.env` to change the host port. The server also fetches public TSM estimates. Set `WOW_TSM_PUBLIC=0` to disable the public TSM feed. A native server uses `python3 start.py server --native` with Rust and curl installed and stores data in `local-data/`.
+Set `WOW_PORT` in the server's `.env` to change the host port. The server also fetches public TSM estimates. Set `WOW_TSM_PUBLIC=0` to disable the public TSM feed. A native server uses `python3 start.py server --native` with Rust, curl and Python 3 with the standard sqlite3 module installed and stores data in `local-data/`.
 
 ### Optional Docker-hosted TSM Desktop
 
@@ -141,6 +141,24 @@ Open **Opportunities** or **Professions** to see all crafts the planner evaluate
 **Price basis** defaults to **Latest available prices**. For each item, the server compares your full and targeted scans, Blizzard Auction House, TSM (public DBRecent and any uploaded Desktop AppHelper data), and Booty Bay Broker for the same market. The newest positive unit price wins, using the time the source observed it. At equal times, a targeted check wins, followed by a full scan, Blizzard, TSM Desktop, public TSM and Broker. A scan with zero stock updates availability and keeps the last known price for planning. Older prices retain their timestamps and show **Stale** after the server's freshness window (six hours by default). Expand a route to see the price source and age for each auction reagent.
 
 Pick **Craft → vendor**, **Craft → disenchant**, or **Craft → auction** in the route filter. The table shows the cost and profit per recipe run. Expand a row for reagents, quantities, qualifications, price sources, cooldowns when known and batch calculations. Eligible direct buy-to-vendor and buy-to-disenchant routes are also supported.
+
+### Price a purchase by its share of the auction house
+
+In **Opportunities** or **Professions**, choose **Price basis → Quantity percentile** and set **Batch size (runs)**. Each reagent uses its required quantity across the batch and the most recent eligible in-game or Blizzard listing snapshot for that item. Expand the route to see its percentile, listed units, source and age.
+
+With **Minimum percentile → Auto**, the price is the buyout per unit of the last unit needed when listings are ordered from cheapest to most expensive. A stack of 20 counts as 20 units. If 80 ore are listed at 2c and 20 at 10c, buying 80 uses 2c per unit. Buying 81 reaches the 10c tier and budgets 810c for the batch. Choosing **P90** budgets at least the 90th unit's price even for a smaller order. This is a planning budget at the selected rate. **Current listings** calculates the cash for purchasable whole stacks and provides TSM shopping ceilings.
+
+A known shortage gives an unknown margin unless a vendor can supply the reagent. Older scans that lack price levels, and items with no fresh listing detail, can use a labeled planning estimate. The freshness window is `WOW_MAX_AGE_SECONDS` (six hours by default). The per-item API is `GET /api/purchase-quote?item=2840&quantity=25&floor=50`. The optional floor is 0–100. A priced response includes available units, the chosen rank and percentile, the unit price and the batch budget in copper.
+
+### Find the best observed hours to craft and sell
+
+1. Rebuild the server with `docker compose up -d --build --wait` and keep it running. It records new in-game uploads and updates from each configured Blizzard, TSM and Booty Bay Broker feed while the dashboard is closed. History stays in the existing Docker data volume, separately for each market. It can start with observations already present in the server's saved source snapshots.
+2. Open **Opportunities** or **Professions**, set your batch size, expand a route, and click **Compare crafting and selling hours**. The purchase window is the UTC hour with the lowest median cost of that route's raw reagents. You can craft after buying them. For an auction sale, the selling window is the hour with the highest median estimated proceeds for the crafted item or its disenchant materials. A vendor pays the same at any hour.
+3. Open **Hourly medians and sampled days** for the costs, proceeds and coverage behind the recommendation. A route needs a complete observed basket for each side being compared. Each eligible hour needs observations on at least three distinct days, and at least two eligible hours are required for a comparison. The dashboard shows partial coverage while history accumulates. To look up a single item's lowest and highest unit-price hours, expand it under **Market prices** and select **Compare hourly item prices**.
+
+The server keeps a rolling 28-day history. It uses the source's observation time and retains the newest price per item per UTC hour with the same tie priority as the current market report. Repeated polls and uploads count once. Quantity-percentile comparisons apply the selected floor and batch size to archived stock and price levels. Other historical comparisons use observed unit prices. Auction proceeds include the dashboard's 5% auction cut and 15% sale reserve. The projected margin combines the two hourly medians and deducts configured postage. You may need to hold inventory until the next selling window. The scanner observes listings and feed estimates, so the comparison measures asking prices and cannot establish completed sales or time to sell.
+
+For integrations, `GET /api/price-history?items=2840:25,2770:10&floor=50` returns hourly rows per item as `[UTC hour start in Unix seconds, unit price in copper, purchase budget in copper]`. Omit the floor to compare ordinary unit prices. A null budget marks unavailable pricing or insufficient observed supply for the selected percentile. An empty series means the server has no observations in the window.
 
 ### Buy reagents at a profitable price in TSM
 

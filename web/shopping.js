@@ -211,3 +211,43 @@ function quoteShoppingBatch(item, route, settings, postage, book, cutoff) {
     oldest: Number.isFinite(oldest) ? oldest : null,
   };
 }
+
+// The server orders levels by exact unit price and publishes cumulative unit ranks.
+function percentilePurchase(depth, need, floor) {
+  if (!depth) return { status: "no_depth" };
+  if (need > depth.available) return { status: "insufficient" };
+  if (!depth.levels.length) return { status: "no_price_levels" };
+  const rank = Math.max(need, Number((BigInt(depth.available) * BigInt(floor) + 99n) / 100n));
+  let lo = 0, hi = depth.levels.length - 1;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (depth.levels[mid][0] < rank) lo = mid + 1;
+    else hi = mid;
+  }
+  const [, total, size] = depth.levels[lo];
+  const budget = Number((BigInt(total) * BigInt(need) + BigInt(size) - 1n) / BigInt(size));
+  if (!Number.isSafeInteger(budget)) return { status: "budget_overflow" };
+  return { status: "priced", unit: total / size, budget, percentile: (100 * rank) / depth.available };
+}
+
+function percentileInput(line, entry, batch, floor, cutoff, craft) {
+  const need = line.quantity * batch;
+  const depth = entry?.purchase_depth?.observed_at >= cutoff ? entry.purchase_depth : null;
+  const quote = percentilePurchase(depth, need, floor);
+  const bound = line.source === "bound" || entry?.auctionable === false;
+  const fallback = ["no_depth", "no_price_levels"].includes(quote.status);
+  let unit = bound ? null : (quote.unit ?? (fallback ? entry?.estimate : null) ?? null);
+  let budget = unit == null ? null : (quote.budget ?? Math.ceil(need * unit));
+  const vendor = craft ? (entry?.vendor_buy ?? (line.source === "vendor" ? line.unit_cost : null)) : null;
+  let source = quote.status === "priced" ? "percentile" : "estimate";
+  if (vendor != null && (budget == null || vendor * need <= budget)) {
+    unit = vendor;
+    budget = vendor * need;
+    source = "vendor";
+  } else if (unit == null) {
+    source = bound ? "bound" : "unpriced";
+  }
+  return { ...line, source, unit_cost: unit, cost: Number.isSafeInteger(budget) ? budget / batch : null,
+    purchase_budget: Number.isSafeInteger(budget) ? budget : null, listed_units: depth?.available ?? null,
+    depth, percentile: quote.percentile, quote_status: quote.status };
+}

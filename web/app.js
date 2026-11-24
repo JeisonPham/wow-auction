@@ -126,6 +126,7 @@ function setup() {
   $("route").value = p.route || "";
   $("profitability").value = p.profitability || "";
   $("pricing").value = p.pricing || "estimates";
+  $("floor").value = p.floor || "0";
   $("trainingCost").value = p.trainingCost || "";
   $("trainingCostLabel").hidden = v !== "professions";
   $("batchSize").value = saved.batchSize;
@@ -328,6 +329,7 @@ function render() {
     market = v === "market",
     items = report?.items || [],
     tsm = report?.tsm || {};
+  $("floorLabel").hidden = market || p.pricing !== "percentile";
   if (report) {
     $("scope").textContent = report.region + " / " + report.market;
     const desktop = $("tsm-desktop");
@@ -584,7 +586,7 @@ function render() {
             " · Vendor payout " +
             money(i.vendor_sell) +
             "</p>" +
-            (market ? marketSimulationButton(i, idx) : "") +
+            (market ? marketHistory(i) + marketSimulationButton(i, idx) : "") +
             (r ? [r] : i.routes)
               .map((route, n) => detail(i, r || pricedRoute(i, route), idx, n))
               .join("") +
@@ -618,6 +620,16 @@ function priceObservation(item) {
   ].filter(Boolean).join(" · ");
 }
 function lineBasis(line, route) {
+  if (route.percentileMode && line.quote_status) {
+    if (line.source === "vendor" || line.source === "bound") return line.source;
+    if (line.source === "percentile") {
+      return "P" + (+line.percentile.toFixed(2)) + " · " + line.depth.available.toLocaleString()
+        + " units listed · " + line.depth.source + " · " + age(line.depth.observed_at);
+    }
+    if (line.quote_status === "insufficient") return "Insufficient supply · " + line.depth.source + " · " + age(line.depth.observed_at);
+    if (line.quote_status === "budget_overflow") return "Purchase budget exceeds the copper limit";
+    return "No price levels · Planning estimate · " + priceObservation(listingBook.get(line.id));
+  }
   if (route.shopping || !["estimate", "checked"].includes(line.source)) return line.source;
   return priceObservation(listingBook.get(line.id));
 }
@@ -706,6 +718,7 @@ function openSimulation(name, model, shortages, at) {
         "</td><td>" +
         esc(
           {
+            percentile: line.source === "percentile" ? "P" + (+line.percentile.toFixed(2)) + " · " + line.depth.source : "Quantity percentile",
             checked: "In-game scan",
             estimate: listingBook.get(line.id)?.estimate_source || report.tsm.source,
             vendor: "Vendor",
@@ -931,20 +944,30 @@ function calc(i, r) {
   };
 }
 function pricedRoute(i, r) {
-  if (prefs().pricing !== "listings" || view() === "market") return r;
+  const basis = prefs().pricing;
+  if (view() === "market" || !["listings", "percentile"].includes(basis)) return r;
   const c = calc(i, r);
   const postage = summary(i, r, c).postage;
+  if (basis === "percentile") {
+    const cutoff = Math.floor(Date.now() / 1000) - (report.depth_max_age ?? 21600);
+    const floor = Number(prefs().floor || 0);
+    const inputs = r.inputs.map((line) =>
+      percentileInput(line, listingBook.get(line.id), c.batch, floor, cutoff, isCraft(r)));
+    const sum = inputs.every((l) => l.purchase_budget != null)
+      ? inputs.reduce((n, l) => n + l.purchase_budget, 0) : null;
+    const budget = Number.isSafeInteger(sum) ? sum : null;
+    const net = budget != null && r.proceeds != null ? r.proceeds * c.batch - budget - postage : null;
+    const profit = Number.isSafeInteger(net) ? net / c.batch : null;
+    const short = inputs.some((l) => l.source !== "vendor" && l.quote_status === "insufficient");
+    return { ...r, percentileMode: true, inputs, purchaseBudget: budget,
+      cost: budget == null ? null : budget / c.batch, profit,
+      timing: routeTiming(r.timing, profit),
+      stock: short ? "insufficient" : profit == null ? "unknown" : "estimated" };
+  }
   const cutoff =
     Math.floor(Date.now() / 1000) - (report?.shopping_max_age ?? 900);
   const q = quoteShoppingBatch(i, r, c, postage, listingBook, cutoff);
   const profit = q.profit == null ? null : q.profit / c.batch;
-  const timing = r.timing && {
-    ...r.timing,
-    gold_per_hour:
-      profit == null || !r.timing.repeat_seconds
-        ? null
-        : (profit * 0.36) / r.timing.repeat_seconds,
-  };
   return {
     ...r,
     baseRoute: r,
@@ -955,9 +978,19 @@ function pricedRoute(i, r) {
     proceeds: q.out == null ? null : q.out / c.batch,
     net_unit_value: q.netUnit,
     profit,
-    timing,
+    timing: routeTiming(r.timing, profit),
     stock: q.short ? "insufficient" : q.issue ? "unknown" : "verified",
   };
+}
+function routeTiming(timing, profit) {
+  return timing && {
+    ...timing, gold_per_hour: profit == null || !timing.repeat_seconds
+      ? null : (profit * 0.36) / timing.repeat_seconds,
+  };
+}
+function basisText(r) {
+  if (r.percentileMode) return "Quantity percentile budgets each reagent at its selected unit price.";
+  return r.shopping ? "Current listing prices for this batch." : "Latest available prices. In-game prices are unit-weighted averages.";
 }
 function summary(i, r, c) {
   const stacks = r.inputs.reduce(
@@ -978,7 +1011,7 @@ function summary(i, r, c) {
       ? r.shopping.cost
       : r.cost == null
         ? null
-        : r.cost * c.batch + postage,
+        : (r.purchaseBudget ?? r.cost * c.batch) + postage,
     out = r.shopping
       ? r.shopping.out
       : r.proceeds == null
@@ -996,7 +1029,7 @@ function summary(i, r, c) {
         l.name +
         " needs " +
         l.quantity * c.batch +
-        ", checked " +
+        (r.percentileMode ? ", listed " : ", checked ") +
         l.listed_units,
     );
   const net = cost == null || out == null ? null : out - cost;
@@ -1103,9 +1136,7 @@ function instructions(i, r, c) {
       : []),
     "Basis: " +
       r.stock +
-      (r.shopping
-        ? " · Current listing prices for this batch. "
-        : " · Latest available prices. In-game prices are unit-weighted averages. ") +
+      " · " + basisText(r) + " " +
       (destroys(r)
         ? "Random yields; net includes the 5% auction cut and 15% sale reserve."
         : r.kind === "craft_auction"
@@ -1286,9 +1317,7 @@ function detail(i, r, idx, n) {
       : "") +
     '<p class="hint">' +
     esc(r.stock) +
-    (r.shopping
-      ? " · Current listing prices for this batch."
-      : " · Latest available prices. In-game prices are unit-weighted averages.") +
+    " · " + basisText(r) +
     (destroys(r)
       ? " Expected proceeds include the auction cut and sale reserve. Drops and sale prices vary. " +
         esc(report?.catalog?.disenchant_source || "")
@@ -1329,6 +1358,7 @@ function detail(i, r, idx, n) {
         esc(b.shortages.join(" / ")) +
         "</p>"
       : "") +
+    timingPanel(i, r, c) +
     (r.shopping ? shoppingPanel(r, c, input) : "") +
     "<button data-copy>Copy Markdown</button> " +
     (isCraft(r) ? craftSimulationButton(r) : "") +
@@ -1343,6 +1373,8 @@ $("body").onclick = async (e) => {
     prefs().open[key] = !prefs().open[key];
     render();
     document.querySelector('[data-row="' + btn.dataset.row + '"]')?.focus();
+  } else if (btn.hasAttribute("data-history")) {
+    await loadTiming(btn.dataset.history);
   } else if (btn.hasAttribute("data-sim-item")) {
     const item = rows[Number(btn.dataset.simItem)].i;
     openSimulation(
@@ -1452,6 +1484,7 @@ for (const key of [
   "route",
   "profitability",
   "pricing",
+  "floor",
   "trainingCost",
 ])
   $(key).oninput = (e) => {

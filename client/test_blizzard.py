@@ -37,6 +37,7 @@ class BlizzardTests(unittest.TestCase):
         regular = {"id": 111, "auctions": [
             {"item": {"id": 1}, "quantity": 2, "buyout": 31},
             {"item": {"id": 1}, "quantity": 5, "buyout": 81},
+            {"item": {"id": 1}, "quantity": 2, "buyout": 31},
             {"item": {"id": 1, "bonus_lists": [7]}, "quantity": 1, "buyout": 1},
             {"item": {"id": 2}, "quantity": 1, "bid": 1},
             {"item": {"id": 3}, "quantity": 10, "buyout": 40},
@@ -48,6 +49,8 @@ class BlizzardTests(unittest.TestCase):
         book = blizzard.fetch("Forever-US", "Normal-Alliance", (0, 0), opener)
         self.assertEqual(book["modified"], [150, 180])
         self.assertEqual(book["items"], {1: dict(total=31, units=2, at=150), 3: dict(total=21, units=1, at=180)})
+        self.assertEqual(book["depth"], [{1: [[2, 31, 2], [5, 81, 1]], 3: [[10, 40, 1]]},
+                                         {3: [[1, 21, 150]]}])
         login, auctions, goods = [call.args[0] for call in opener.open.call_args_list]
         self.assertEqual(login.full_url, "https://oauth.battle.net/token")
         self.assertEqual(login.get_header("Authorization"), "Basic dGVzdDpzZWNyZXQ=")
@@ -61,6 +64,7 @@ class BlizzardTests(unittest.TestCase):
                                    response({"auctions": []}, 200)]
         next_book = blizzard.fetch("Forever-US", "Normal-Alliance", (150, 180), opener)
         self.assertEqual((next_book["modified"], next_book["items"]), ([150, 200], {}))
+        self.assertEqual(next_book["depth"], [None, {}])
         calls = opener.open.call_args_list
         for call, at in zip(calls[-2:], (150, 180)):
             self.assertEqual(call.args[0].get_header("If-modified-since"), formatdate(at, usegmt=True))

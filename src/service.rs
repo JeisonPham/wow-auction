@@ -1,5 +1,7 @@
 mod blizzard;
 mod broker_poll;
+mod depth;
+mod history;
 use crate::{
     feed::{self, BrokerBook, Feed},
     fresh, now, planner,
@@ -100,6 +102,7 @@ struct State {
     broker_error: Option<String>,
     checked: u64,
     error: Option<String>,
+    depths: HashMap<u32, depth::Depth>,
     views: HashMap<&'static str, Arc<[u8]>>,
     next: u64,
     generation: u64,
@@ -114,6 +117,12 @@ impl State {
             self.prior_upload_prices
                 .resolve(self.bundle.as_ref(), &self.feed, &self.broker);
         self.blizzard.add_to(&mut prices);
+        let checks = scan::MarketChecks::new(self.bundle.as_ref(), t, c.age);
+        self.depths.clear();
+        // Item IDs are positive; the zero entry represents market-wide empty coverage.
+        if let Some(empty) = depth::Depth::for_item(0, &checks, &self.blizzard, t, c.age) {
+            self.depths.insert(0, empty);
+        }
         let mut r = planner::market_report_with_prices(
             &c.region,
             &c.market,
@@ -123,7 +132,20 @@ impl State {
             &prices,
             c.age,
             t,
+            |id| {
+                let d = depth::Depth::for_item(id, &checks, &self.blizzard, t, c.age)?;
+                let lowest = d.lowest();
+                self.depths.insert(id, d);
+                lowest
+            },
         );
+        for item in r["items"].as_array_mut().expect("planner item list") {
+            let id = item["id"].as_u64().expect("planner item ID") as u32;
+            if let Some(d) = self.depths.get(&id) {
+                item["purchase_depth"] = json!(d);
+            }
+        }
+        r["depth_max_age"] = c.age.into();
         if let Some(port) = env::var("WOW_TSM_DESKTOP_PORT")
             .ok()
             .and_then(|v| v.parse::<u16>().ok())
@@ -146,6 +168,7 @@ impl State {
         let mut times = vec![self.feed.at];
         times.extend(self.feed.observed.values().copied());
         times.extend(self.prior_upload_prices.0.values().map(|p| p.at));
+        times.extend(self.blizzard.modified);
         times.extend(self.blizzard.items.values().map(|p| p.at));
         times.extend(self.broker.items.values().map(|p| p.observed_at));
         if let Some(b) = &self.bundle {
@@ -253,6 +276,7 @@ fn accept_upload(
         }
     }
     save(&c.dir, "scan-upload.json.gz", &normalized).map_err(|e| (503, e))?;
+    history::upload(c, &b).map_err(|e| (503, e))?;
     s.bundle = Some(b);
     s.uploaded_at = Some(t);
     s.views.clear();
@@ -268,7 +292,7 @@ fn accept_broker(
     let mut state = state.lock().unwrap();
     let mut book = state.broker.clone();
     let mut updated = 0;
-    for (id, price) in incoming.items {
+    for (&id, &price) in &incoming.items {
         if let Some(old) = book.items.get(&id) {
             if old.observed_at > price.observed_at || *old == price {
                 continue;
@@ -287,14 +311,15 @@ fn accept_broker(
         return Err((422, "too many Booty Bay Broker items".into()));
     }
     if updated > 0 {
-        book.region = incoming.region;
-        book.market = incoming.market;
+        book.region.clone_from(&incoming.region);
+        book.market.clone_from(&incoming.market);
         save(
             &c.dir,
             "bootybay-prices.json",
             &serde_json::to_vec(&book).map_err(|e| (503, e.to_string()))?,
         )
         .map_err(|e| (503, e))?;
+        history::broker(c, &incoming).map_err(|e| (503, e))?;
         state.broker = book;
         state.views.clear();
     }
@@ -360,6 +385,7 @@ fn handle(mut r: Request, c: &Config, state: &Mutex<State>) {
         )),
         "/app.css" => Some(("text/css", include_str!("../web/app.css"))),
         "/app.js" => Some(("text/javascript", include_str!("../web/app.js"))),
+        "/history.js" => Some(("text/javascript", include_str!("../web/history.js"))),
         "/shopping.js" => Some(("text/javascript", include_str!("../web/shopping.js"))),
         "/price-simulation.js" => Some((
             "text/javascript",
@@ -371,11 +397,44 @@ fn handle(mut r: Request, c: &Config, state: &Mutex<State>) {
     if let Some((mime, text)) = asset {
         return respond(r, 200, mime, text.as_bytes().into(), None);
     }
+    if path == "/api/price-history" {
+        let Some(args) = r.url().split_once('?').and_then(|(_, q)| history::parse(q)) else {
+            return fail(
+                r,
+                400,
+                "Expected items=ID:quantity,ID:quantity and optional floor from 0 to 100",
+            );
+        };
+        return match history::query(c, &args) {
+            Ok(data) => respond(r, 200, "application/json", data.into(), None),
+            Err(e) => {
+                eprintln!("{e}");
+                fail(r, 503, "Hourly price history unavailable")
+            }
+        };
+    }
     let mut s = state.lock().unwrap();
     if path == "/api/scan-queue" && s.bundle.is_none() {
         return fail(r, 503, "awaiting first upload");
     }
     s.refresh(c, now());
+    if path == "/api/purchase-quote" {
+        let Some(q) = r
+            .url()
+            .split_once('?')
+            .and_then(|(_, args)| depth::Request::parse(args))
+        else {
+            drop(s);
+            return fail(
+                r,
+                400,
+                "Expected positive item and quantity, and optional floor from 0 to 100",
+            );
+        };
+        let quote = q.result(s.depths.get(&q.item).or_else(|| s.depths.get(&0)));
+        drop(s);
+        return reply(r, 200, quote);
+    }
     let Some(data) = s.views.get(path.as_str()).cloned() else {
         return fail(r, 404, "unknown route");
     };
@@ -443,10 +502,17 @@ fn restore(c: &Config) -> Result<State> {
             .ok()
             .map(|d| d.as_secs())
     });
+    let blizzard = blizzard::restore(c)?;
+    if let Some(b) = &bundle {
+        history::upload(c, b)?;
+    }
+    history::broker(c, &broker)?;
+    history::feed(c, &feed)?;
+    blizzard.record_history(c)?;
     Ok(State {
         bundle,
         prior_upload_prices,
-        blizzard: blizzard::restore(c)?,
+        blizzard,
         blizzard_checked_at: None,
         blizzard_error: None,
         uploaded_at,
@@ -457,6 +523,7 @@ fn restore(c: &Config) -> Result<State> {
         checked: 0,
         error: None,
         views: HashMap::new(),
+        depths: HashMap::new(),
         next: 0,
         generation: 0,
         epoch: std::time::SystemTime::now()
@@ -504,6 +571,7 @@ pub fn run() -> Result<()> {
                     "tsm-public.json",
                     &serde_json::to_vec(&f).map_err(|e| e.to_string())?,
                 )?;
+                history::feed(&c, &f)?;
                 s.feed = f;
                 Ok(())
             });

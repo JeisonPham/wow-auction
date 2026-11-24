@@ -7,14 +7,15 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[repr(u8)]
 pub(crate) enum Source {
     // At equal observation times prefer a local search, then a full scan, then Blizzard.
-    Broker,
-    Public,
-    Desktop,
-    Blizzard,
-    Full,
-    Targeted,
+    Broker = 0,
+    Public = 1,
+    Desktop = 2,
+    Blizzard = 3,
+    Full = 4,
+    Targeted = 5,
 }
 impl Source {
     pub fn label(self) -> &'static str {

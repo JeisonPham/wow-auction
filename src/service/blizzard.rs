@@ -1,4 +1,4 @@
-use super::{env_or, save, Config, State};
+use super::{depth, env_or, history, save, Config, State};
 use crate::{
     now,
     prices::{Observation, Prices, Source},
@@ -20,12 +20,16 @@ pub(super) struct Ask {
     pub at: u64,
 }
 
-#[derive(Clone, Default, Deserialize, Serialize)]
+type ListingBook = BTreeMap<u32, Vec<[u64; 3]>>;
+
+#[derive(Default, Deserialize, Serialize)]
 pub(super) struct Book {
     region: String,
     market: String,
     pub modified: [u64; 2],
     pub items: BTreeMap<u32, Ask>,
+    #[serde(default)]
+    depth: [Option<ListingBook>; 2],
 }
 
 impl Book {
@@ -47,9 +51,86 @@ impl Book {
         {
             return Err("Invalid Blizzard auction price or observation time".into());
         }
+        for snapshot in book.depth.iter().flatten() {
+            for (&id, lots) in snapshot {
+                let units = lots.iter().try_fold(0u64, |n, &[size, total, count]| {
+                    if size == 0 || count == 0 || !(1..=MAX).contains(&total) {
+                        return None;
+                    }
+                    n.checked_add(size.checked_mul(count)?)
+                });
+                if id == 0 || !units.is_some_and(|n| n <= MAX) {
+                    return Err("Invalid Blizzard listing depth".into());
+                }
+            }
+        }
         Ok(book)
     }
 
+    pub(super) fn listings(&self, id: u32) -> Option<(u64, &[[u64; 3]])> {
+        // Listings and commodities publish on separate clocks. Never add two snapshots together.
+        let present = self
+            .depth
+            .iter()
+            .zip(self.modified)
+            .filter_map(|(book, at)| Some((at, book.as_ref()?.get(&id)?.as_slice())))
+            .max_by_key(|(at, lots)| (!lots.is_empty(), *at));
+        present.or_else(|| {
+            self.depth
+                .iter()
+                .all(Option::is_some)
+                .then(|| (self.modified[0].min(self.modified[1]), &[][..]))
+        })
+    }
+    fn conditional_times(&self) -> [u64; 2] {
+        std::array::from_fn(|i| {
+            if self.depth[i].is_some() {
+                self.modified[i]
+            } else {
+                0
+            }
+        })
+    }
+    pub(super) fn record_history(&self, c: &Config) -> Result<()> {
+        let src = Source::Blizzard as u8;
+        let mut rows: Vec<_> = self
+            .items
+            .iter()
+            .map(|(&id, p)| (id, p.at, src, p.total, p.units, None, vec![]))
+            .collect();
+        for (book, at) in self.depth.iter().zip(self.modified) {
+            for (&id, lots) in book.iter().flat_map(|b| b.iter()) {
+                if lots.is_empty() {
+                    if self
+                        .depth
+                        .iter()
+                        .flatten()
+                        .any(|book| book.get(&id).is_some_and(|rows| !rows.is_empty()))
+                    {
+                        continue;
+                    }
+                    rows.push((id, at, src, 0, 0, Some(0), vec![]));
+                    continue;
+                }
+                let levels = depth::levels(lots);
+                let [_, total, size] = levels[0];
+                let available = levels.last().unwrap()[0];
+                rows.push((id, at, src, total, size, Some(available), levels));
+            }
+        }
+        if self.depth.iter().all(Option::is_some) {
+            rows.push((
+                0,
+                self.modified[0].min(self.modified[1]),
+                src,
+                0,
+                0,
+                Some(0),
+                vec![],
+            ));
+        }
+        history::record(c, &rows)
+    }
     pub fn add_to(&self, prices: &mut Prices) {
         for (&id, p) in &self.items {
             prices.observe(
@@ -95,7 +176,10 @@ fn accept(c: &Config, state: &mut State, raw: &[u8]) -> Result<()> {
     if next.items.values().any(|p| !next.modified.contains(&p.at)) {
         return Err("Blizzard price does not match either snapshot time".into());
     }
-    if next.modified == state.blizzard.modified && next.items.is_empty() {
+    if next.modified == state.blizzard.modified
+        && next.items.is_empty()
+        && next.depth.iter().all(Option::is_none)
+    {
         return Ok(());
     }
     for (&id, &prior) in &state.blizzard.items {
@@ -103,11 +187,22 @@ fn accept(c: &Config, state: &mut State, raw: &[u8]) -> Result<()> {
             next.items.insert(id, prior);
         }
     }
+    for (i, depth) in next.depth.iter_mut().enumerate() {
+        if depth.is_none() && next.modified[i] == state.blizzard.modified[i] {
+            depth.clone_from(&state.blizzard.depth[i]);
+        } else if let (Some(book), Some(prior)) = (depth, &state.blizzard.depth[i]) {
+            // Keep which endpoint last checked a sold-out item. Each endpoint has its own clock.
+            for id in prior.keys() {
+                book.entry(*id).or_default();
+            }
+        }
+    }
     save(
         &c.dir,
         &filename(c),
         &serde_json::to_vec(&next).map_err(|e| e.to_string())?,
     )?;
+    next.record_history(c)?;
     state.blizzard = next;
     Ok(())
 }
@@ -123,7 +218,7 @@ pub(super) fn run(c: &Config, state: &Mutex<State>) {
     );
     loop {
         let mut delay = HOUR;
-        let modified = state.lock().unwrap().blizzard.modified;
+        let modified = state.lock().unwrap().blizzard.conditional_times();
         let output = Command::new(&python)
             .arg(&helper)
             .args([&c.region, &c.market])
