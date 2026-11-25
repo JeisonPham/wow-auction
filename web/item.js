@@ -63,6 +63,7 @@ function renderItemPage() {
   rows = [{i:item}];
   const fact = (label,value) => '<div><dt>'+label+'</dt><dd>'+value+'</dd></div>';
   const book = item.listing_snapshot, detail = item.listing_detail;
+  const inspectingAsk = document.activeElement?.matches(".sd-control input");
   const links = item.routes.map(r => '<li><a href="'+esc(routeHref(item,r,"market"))+'">'+esc(routeLabel(r)+" · "+r.name)+'</a></li>').join("");
   let trend = "";
   if (item.charts?.daily) {
@@ -76,5 +77,7 @@ function renderItemPage() {
     fact("Unit-weighted mean ask",money(detail?.mean))+fact("Auction listings",observedNumber(detail?.count))+fact("Listed units",observedNumber(book?.available))+'</dl>'+
     '<p class="hint">'+esc(priceObservation(item))+(item.estimate_at ? ' · '+esc(timestamp(item.estimate_at)) : '')+'</p>'+
     (item.vendor_buy != null || item.vendor_sell != null ? '<p>Vendor purchase · '+money(item.vendor_buy)+' &nbsp; Vendor payout · '+money(item.vendor_sell)+'</p>' : '') +
-    marketSimulationButton(item,0)+listingPanel(item)+weekCalendar(item)+trend+(links ? '<section class="route-panel"><h2>Routes</h2><ul>'+links+'</ul></section>' : '')+'</div>';
+    marketSimulationButton(item,0)+supplyDemandPanel(item)+listingPanel(item)+weekCalendar(item)+trend+(links ? '<section class="route-panel"><h2>Routes</h2><ul>'+links+'</ul></section>' : '')+'</div>';
+  bindSupplyDemand(page,item);
+  if (inspectingAsk) page.querySelector(".sd-control input")?.focus({preventScroll:true});
 }

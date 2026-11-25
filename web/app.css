@@ -643,3 +643,29 @@ td > .item-link { display: block; font-size: .85rem; }
 .week-calendar td small, .week-calendar .unobserved { color: var(--muted); }
 .week-calendar th:first-child { position: sticky; left: 0; background: var(--panel); }
 .listing-pager { display:flex; gap:1rem; align-items:center; margin-top:.8rem; }
+
+.sd-chart { margin: 1rem 0; max-width: 58rem; font-variant-numeric: tabular-nums; }
+.sd-chart figcaption, .sd-values { display: flex; flex-wrap: wrap; gap: .5rem 2rem; }
+.sd-chart figcaption { margin-bottom: 1rem; }
+.sd-supply { --series: var(--gold); }
+.sd-demand { --series: #82d3c3; }
+.sd-chart figcaption span::before { content: ""; display: inline-block; width: 1.8rem; margin-right: .5rem; vertical-align: middle; border-top: 3px solid var(--series); }
+.sd-chart figcaption .sd-demand::before { border-top-style: dashed; }
+.sd-grid { display: grid; grid-template-columns: auto minmax(0,1fr); gap: .25rem .75rem; padding-right: .4rem; }
+.sd-plot { position: relative; height: clamp(150px, 20vw, 205px); background: linear-gradient(to bottom,transparent calc(50% - .5px),var(--line) 50%,transparent calc(50% + .5px)),var(--bg); border-block: 1px solid var(--line); cursor: crosshair; }
+.sd-plot svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.sd-plot path { fill: none; stroke: var(--series); stroke-width: 2.5; vector-effect: non-scaling-stroke; }
+.sd-plot path.sd-demand { stroke-dasharray: 7 4; }
+.sd-y, .sd-x { display: flex; justify-content: space-between; color: var(--muted); font-size: .8rem; }
+.sd-y { flex-direction: column; text-align: right; line-height: 1; }
+.sd-x { grid-column: 2; }
+.sd-x.single { justify-content: center; }
+.sd-guide, .sd-dot { position: absolute; pointer-events: none; }
+.sd-guide { inset-block: 0; border-left: 1px dotted var(--muted); }
+.sd-dot { width: 9px; height: 9px; transform: translate(-50%,-50%); background: var(--series); border: 1px solid var(--bg); border-radius: 50%; }
+.sd-dot.sd-demand { transform: translate(-50%,-50%) rotate(45deg); border-radius: 0; }
+.sd-control { display: grid; gap: .25rem; color: var(--muted); margin-top: .8rem; font-size: .85rem; }
+.sd-control input { width: 100%; padding: 0; min-height: 24px; accent-color: var(--gold); cursor: pointer; }
+.sd-values { margin: .75rem 0 1rem; padding-top: .8rem; border-top: 1px solid var(--line); }
+.sd-values dt { color: var(--muted); font-size: .85rem; }
+.sd-values dd { margin: .15rem 0 0; font-weight: 600; }

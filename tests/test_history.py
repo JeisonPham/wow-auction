@@ -47,6 +47,17 @@ class HourlyArchiveTests(unittest.TestCase):
                                (1,43200,2,100,1,None,[],None)],10)
             data = history.archive(db,[1,2],10,12)
             self.assertEqual(data["coverage"],[39600])
-            self.assertEqual(data["items"][1], [[36000,None,12,None,None],[43200,100.,None,None,None]])
-            self.assertEqual(data["items"][2], [[36000,20.,4,1,0]])
+            self.assertEqual(data["coverage_depth"],[[39600,39600,4]])
+            self.assertEqual(data["items"][1], [[36000,None,12,None,None,36000,4],[43200,100.,None,None,None]])
+            self.assertEqual(data["items"][2], [[36000,20.,4,1,0,36000,4]])
             self.assertEqual(data["level_books"][2], [[[4,20,1]]])
+
+    def test_complete_scan_and_later_targeted_empty_keep_their_scan_identity(self):
+        with closing(sqlite3.connect(":memory:")) as db, db:
+            db.executescript(history.SCHEMA)
+            history.store(db, [(0,36010,4,0,0,0,[]), (1,36012,5,0,0,0,[]),
+                              (2,36001,3,10,1,1,[[1,10,1]])], 10)
+            data = history.archive(db, [1,2],10,10)
+            self.assertEqual(data["coverage_depth"], [[36000,36010,4]])
+            self.assertEqual(data["items"][1], [[36000,None,0,0,None,36012,5]])
+            self.assertEqual(data["items"][2], [])

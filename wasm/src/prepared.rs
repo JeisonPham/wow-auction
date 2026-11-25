@@ -122,6 +122,7 @@ fn forecast(id: u64, estimate: &V, r: &V) -> V {
 
 pub fn dashboard(report: &mut V, mut archive: V) {
     let covered = archive["coverage"].take();
+    let covered_depth = supply_demand::coverage(&archive["coverage_depth"]);
     let mut data = archive["items"].take();
     let mut books = archive["level_books"].take();
     let blank_calendar = calendar(&V::Null, &covered);
@@ -140,6 +141,15 @@ pub fn dashboard(report: &mut V, mut archive: V) {
     for item in items.iter_mut() {
         let id = uint(&item["id"]);
         let raw = &data[id.to_string()];
+        let activity = supply_demand::profile(
+            &item["listing_snapshot"],
+            raw,
+            &books[id.to_string()],
+            &covered_depth,
+        );
+        if !activity.is_null() {
+            item["supply_demand"] = activity;
+        }
         let prices = history::samples(raw);
         if !rows(raw).is_empty() {
             let mut week = calendar(raw, &covered);
@@ -207,8 +217,12 @@ pub fn dashboard(report: &mut V, mut archive: V) {
     }
     for item in items {
         let key = uint(&item["id"]).to_string();
-        if let Some(raw) = data.as_object_mut().and_then(|map| map.remove(&key)) {
+        if let Some(mut raw) = data.as_object_mut().and_then(|map| map.remove(&key)) {
             if !rows(&raw).is_empty() {
+                // Exact scan times and sources are only needed to compare books on the server.
+                for row in raw.as_array_mut().into_iter().flatten() {
+                    row.as_array_mut().unwrap().truncate(5);
+                }
                 item["hours"] = raw;
             }
         }

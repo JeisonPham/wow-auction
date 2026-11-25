@@ -197,7 +197,7 @@ w.Worker = class {
   }
 };
 w.eval(
-  ["web/calculations.js", "web/shopping.js", "web/history.js", "web/item.js", "web/route.js", "web/craft-order.js", "web/warm.js", "web/app.js"]
+  ["web/calculations.js", "web/shopping.js", "web/history.js", "web/supply-demand.js", "web/item.js", "web/route.js", "web/craft-order.js", "web/warm.js", "web/app.js"]
     .map((file) => fs.readFileSync(file, "utf8"))
     .join("\n"),
 );
@@ -689,9 +689,17 @@ async function runSimulation() {
   const beforeItem = reportHits;
   const oldPath = w.location.href;
   const link = d.querySelector('.material-card a[href^="/item?"]');
+  const linkedItem = items.find(item => item.id === Number(new URL(link.href).searchParams.get("item")));
+  linkedItem.supply_demand = {points:[[2,5,8],[5,20,3]],pairs:2,seconds:7200};
   link.click();
   assert.equal(w.location.pathname,"/item");
   assert.match(d.querySelector(".item-report").textContent,/Auction listings/);
+  assert.equal(d.querySelectorAll(".sd-plot path[d]").length,2);
+  const priceControl = d.querySelector(".sd-control input");
+  assert.match(priceControl.getAttribute("aria-valuetext"), /2c.*5 units.*8 units\/hour/);
+  priceControl.value = 1;
+  priceControl.dispatchEvent(new w.Event("input", {bubbles:true}));
+  assert.match(priceControl.getAttribute("aria-valuetext"), /5c.*20 units.*3 units\/hour/);
   assert.equal(d.querySelectorAll(".week-calendar tbody tr").length,24);
   assert.equal(d.querySelectorAll(".week-calendar tbody td").length,168);
   assert.equal(reportHits,beforeItem);

@@ -395,6 +395,7 @@ fn handle(mut r: Request, c: &Config, state: &Mutex<State>, published: &dashboar
         "/app.css" => Some(("text/css", include_str!("../web/app.css"))),
         "/warm.js" => Some(("text/javascript", include_str!("../web/warm.js"))),
         "/item.js" => Some(("text/javascript", include_str!("../web/item.js"))),
+        "/supply-demand.js" => Some(("text/javascript", include_str!("../web/supply-demand.js"))),
         "/app.js" => Some(("text/javascript", include_str!("../web/app.js"))),
         "/route.js" => Some(("text/javascript", include_str!("../web/route.js"))),
         "/craft-order.js" => Some(("text/javascript", include_str!("../web/craft-order.js"))),

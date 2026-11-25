@@ -104,6 +104,7 @@ def archive(db, items, first, last):
         row = samples.setdefault(item, {}).setdefault(hour, [hour*HOUR, None, None, None, None])
         if coverage.get(hour, (0, 0)) > (at, source):
             units, lots, listings = 0, None, 0
+            at, source = coverage[hour]
         index = None
         if lots:
             indices = ladder_indices.setdefault(item, {})
@@ -112,14 +113,18 @@ def archive(db, items, first, last):
                 indices[lots] = len(books)
                 books.append(json.loads(lots))
             index = indices[lots]
-        row[2:] = [units, 0 if units == 0 else listings, index]
+        row[2:] = [units, 0 if units == 0 else listings, index, at, source]
     for hours in samples.values():
         for hour, row in hours.items():
-            if (hour in coverage and row[2] is None) or row[2] == 0:
+            if hour in coverage and row[2] is None:
+                row[5:] = coverage[hour]
+                row[2] = 0
+            if row[2] == 0:
                 row[1:5] = [None, 0, 0, None]
     return {"coverage": sorted(h*HOUR for h in coverage), "level_books": levels_by_item,
+            "coverage_depth": [[h*HOUR, *observation] for h, observation in sorted(coverage.items())],
             "items": {item: [row for hour, row in sorted(hours.items())
-                             if hour not in coverage or row[2] != 0] for item, hours in samples.items()}}
+                             if row[2] != 0 or tuple(row[5:]) != coverage.get(hour)] for item, hours in samples.items()}}
 
 
 def migrate(db):

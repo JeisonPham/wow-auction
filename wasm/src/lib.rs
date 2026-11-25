@@ -7,6 +7,7 @@ mod optimize;
 pub mod prepared;
 mod simulation;
 mod stacks;
+mod supply_demand;
 
 type Result<T> = std::result::Result<T, String>;
 const MAX: f64 = 9_007_199_254_740_991.0;

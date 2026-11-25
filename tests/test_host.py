@@ -83,6 +83,7 @@ class HostTests(unittest.TestCase):
         self.assertIn(b'id="routePage"', html)
         self.assertIn(b'fullRoute', self.req("/route.js")[1])
         self.assertEqual(self.req("/item?item=1001")[0], 200)
+        self.assertIn(b"bindSupplyDemand", self.req("/supply-demand.js")[1])
         code, wasm, headers = self.req("/auction.wasm")
         self.assertEqual((code, wasm[:4], headers.get_content_type()), (200, b'\x00asm', "application/wasm"))
         self.assertIn(b'craftOrderModel', self.req("/craft-order.js")[1])
@@ -112,7 +113,9 @@ class HostTests(unittest.TestCase):
                     captured_at=at,
                     prices={"1001": dict(price, lots=[[2, 11, 2]])},
                     listed_units={"1001": 4, "1002": 0},
-                )
+                ),
+                dict(captured_at=at-3600, prices={"1001": dict(total_buyout=55, units=10,
+                     auctions=5, observed_at=at-3600, lots=[[2,11,5]])}, listed_units={"1001":10})
             ],
         )
 
@@ -157,6 +160,7 @@ class HostTests(unittest.TestCase):
             self.fail("Updated dashboard snapshot was not published")
         by_id = {i["id"]:i for i in prepared["items"]}
         self.assertEqual(by_id[1001]["listing_detail"]["tiers"], [[2,11,2,5.5,4,4]])
+        self.assertEqual(by_id[1001]["supply_demand"], {"points":[[5.5,4,6]],"pairs":1,"seconds":3600})
         import datetime
         observation = datetime.datetime.fromtimestamp(at,datetime.timezone.utc)
         slot = str(observation.weekday()*24 + observation.hour)
