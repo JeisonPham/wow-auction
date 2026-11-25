@@ -51,6 +51,7 @@ class BlizzardTests(unittest.TestCase):
         self.assertEqual(book["items"], {1: dict(total=31, units=2, at=150), 3: dict(total=21, units=1, at=180)})
         self.assertEqual(book["depth"], [{1: [[2, 31, 2], [5, 81, 1]], 3: [[10, 40, 1]]},
                                          {3: [[1, 21, 150]]}])
+        self.assertEqual(book["commodity_counts"], {3: 1})
         login, auctions, goods = [call.args[0] for call in opener.open.call_args_list]
         self.assertEqual(login.full_url, "https://oauth.battle.net/token")
         self.assertEqual(login.get_header("Authorization"), "Basic dGVzdDpzZWNyZXQ=")

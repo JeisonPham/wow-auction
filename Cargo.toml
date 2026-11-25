@@ -5,6 +5,7 @@ edition = "2021"
 rust-version = "1.85"
 
 [dependencies]
+auction-calculations = { path = "wasm" }
 tiny_http = "0.12"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

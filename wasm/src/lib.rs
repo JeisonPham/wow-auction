@@ -4,6 +4,7 @@ use std::cell::RefCell;
 mod history;
 mod market;
 mod optimize;
+pub mod prepared;
 mod simulation;
 mod stacks;
 
@@ -27,6 +28,7 @@ fn ratio(a: f64, b: f64) -> Option<f64> {
 fn dispatch(command: &V) -> Result<V> {
     let a = &command["args"];
     Ok(match command["op"].as_str().unwrap_or("") {
+        "archiveSeries" => prepared::series(&a[0], &a[1], uint(&a[2]), a[3].as_u64(), &a[4]),
         "register" => return market::register(&a[0]),
         "simulate" => return simulation::simulate(a, false),
         "forecast" => simulation::simulate(a, true).unwrap_or_else(|_| json!({"cost":null,"proceeds":null,"profit":null,"winPercent":null,"repeatGoldPerHour":null})),

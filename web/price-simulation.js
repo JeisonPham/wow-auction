@@ -3,7 +3,7 @@
 importScripts("/calculations.js");
 self.onmessage = ({ data }) => {
   try {
-    AuctionMath.use(data.module);
+    if (data.module) AuctionMath.use(data.module);
     const seed = crypto.getRandomValues(new Uint32Array(1))[0];
     const result = AuctionMath.call(data.model.optimize ? "optimize" : "simulate",
       data.model, data.trials, data.volatility, seed);

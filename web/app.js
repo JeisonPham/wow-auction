@@ -85,6 +85,7 @@ let report,
   etag;
 let routePage;
 function view() {
+  if (routePage?.detail) return "market";
   if (routePage) return routePage.from === "market" ? "opportunities" : routePage.from;
   return Object.hasOwn(titles, location.hash.slice(1))
     ? location.hash.slice(1)
@@ -116,8 +117,11 @@ function options(list, value) {
     .join("");
 }
 function setup() {
+  listingPage = 0;
   routePage = readRouteAddress();
   document.body.classList.toggle("route-view", !!routePage);
+  document.body.classList.toggle("item-view", !!routePage?.detail);
+  if (!routePage) document.title = titles[view()] + " · WoW Auction Monitor";
   $("routePage").hidden = $("routeBack").hidden = !routePage;
   if (routePage) {
     $("routeBack").href = "/#" + routePage.from;
@@ -387,7 +391,8 @@ function render(preserveDraft = false) {
   $("notice").textContent = notice;
   rows = [];
   if (routePage) {
-    renderRoutePage(preserveDraft);
+    if (routePage.detail) renderItemPage();
+    else renderRoutePage(preserveDraft);
     save();
     return;
   }
@@ -565,7 +570,7 @@ function render(preserveDraft = false) {
           (open ? "▾ " : "▸ ") + title + '</button>'
         : '<a class="rowname" aria-label="' + esc(i.name + " · " + routeLabel(r)) + '" href="' + esc(routeHref(i, r, v)) + '">' + title + '</a>';
       return (
-        (market ? '<tr>' : '<tr class="route-row">') + '<td>' + rowLink + '</td>' +
+        (market ? '<tr>' : '<tr class="route-row">') + '<td>' + rowLink + (market ? ' ' + itemLink(i.id, "Prices and listings") : '') + '</td>' +
         cells.map((x) => "<td>" + x + "</td>").join("") +
         "</tr>" +
         (open
@@ -655,11 +660,9 @@ function craftSimulationButton(route) {
   return '<button class="sim-launch" aria-haspopup="dialog" data-sim-craft>Simulate craft batch</button>';
 }
 
-let simulationModel, simulationWorker, listingRequest;
+let simulationModel, simulationWorker;
 const defaultSimAssumptions = $("sim-assumptions").textContent;
 function clearSimulation() {
-  listingRequest?.abort();
-  listingRequest = null;
   simulationWorker?.terminate();
   simulationWorker = null;
   $("sim-result").replaceChildren();
@@ -685,9 +688,11 @@ function craftYield(item, route, c) {
     post: c.post,
   };
 }
-function openSimulation(name, model, shortages, at) {
+function openSimulation(name, model, shortages, at, preserveDraft = false) {
+  const draft = preserveDraft ? [...$("sim-form").querySelectorAll("input")].map(el=>[el,el.value]) : null;
   clearSimulation();
   simulationModel = model;
+  displayedTrial = null;
   $("sim-title").textContent =
     name + (model.optimize ? " · Optimal craft quantity" : model.order ? " · Crafting cost" : model.unitOnly ? " · Unit price" : " · Craft batch");
   $("sim-context").textContent = model.optimize
@@ -728,7 +733,7 @@ function openSimulation(name, model, shortages, at) {
   $("sim-form").querySelector("button").textContent = model.optimize ? "Find best quantity" : "Run simulation";
   $("sim-target-label").hidden = $("sim-target").disabled = !model.order || !!model.optimize;
   $("sim-stock-spread-label").hidden = $("sim-stock-spread").disabled = !model.order;
-  $("sim-target").value = model.order ? model.target : "";
+  $("sim-target").value = model.order ? (saved.orderTargets?.[model.yield.key] ?? model.target) : "";
   $("sim-stock-spread").value = saved.simulation?.stockSpread ?? 10;
   $("sim-columns").innerHTML = (model.order
     ? ["Reagent", "Per cast", "Auction listings", "Vendor / unit"]
@@ -770,9 +775,15 @@ function openSimulation(name, model, shortages, at) {
   const canSize = !model.unitOnly && model.proceeds != null;
   $("sim-gold-label").hidden = $("sim-gold").disabled = !canSize;
   $("sim-gold").value = canSize ? (saved.simulation?.gold ?? "") : "";
+  if (draft) {
+    for (const [el,value] of draft) if (!el.disabled) el.value = value;
+    $("sim-status").textContent = "Market data updated. Run with the latest quotes.";
+    return;
+  }
   $("simulation").showModal();
   if (model.optimize) $("sim-limit").focus();
   else if (model.order) $("sim-target").focus();
+  showPreparedTrial(model);
 }
 function simulationStats(stats) {
   return (
@@ -908,8 +919,9 @@ $("simulation").onclose = () => {
   clearSimulation();
   simulationModel = null;
   if (report && view() !== "market" && (prefs().pricing || "forecast") === "forecast") render(true);
+  if (report) { warmCustomRoutes(); warmTrials(); }
 };
-$("sim-form").oninput = clearSimulation;
+$("sim-form").oninput = () => { displayedTrial = null; clearSimulation(); };
 $("sim-form").onsubmit = async (event) => {
   event.preventDefault();
   if (!$("sim-form").reportValidity() || !simulationModel) return;
@@ -952,6 +964,7 @@ $("sim-form").onsubmit = async (event) => {
     saved.optimizer = {limit: model.limit, budget: budget.value};
   } else if (model.order) {
     model.target = $("sim-target").valueAsNumber;
+    (saved.orderTargets ??= {})[model.yield.key] = model.target;
   }
   if (model.order) {
     model.stockSpread = $("sim-stock-spread").valueAsNumber;
@@ -960,21 +973,19 @@ $("sim-form").onsubmit = async (event) => {
   if (!gold.disabled) saved.simulation.gold = gold.value;
   save();
   if (model.order) {
-    $("sim-status").textContent = "Loading last recorded auction listings…";
-    $("sim-inputs").innerHTML = orderInputTable(model.lines);
-    const request = new AbortController();
-    listingRequest = request;
     try {
-      model.lines = await loadOrderListings(model, request.signal);
+      model.lines = resolveOrderListings(model,true);
     } catch (error) {
-      if (!request.signal.aborted)
-        $("sim-status").textContent = error instanceof TypeError
-          ? "Listings could not be loaded. Run again to retry." : error.message;
+      $("sim-status").textContent = error.message;
       return;
-    } finally {
-      if (listingRequest === request) listingRequest = null;
     }
-    if (request.signal.aborted) return;
+  }
+  const cache = trialCache;
+  const key = trialKey(model,trials,volatility);
+  if (cache.has(key) && displayedTrial !== key) {
+    displayedTrial = key;
+    showSimulationResults(cache.get(key),trials);
+    return;
   }
   $("sim-status").textContent = model.optimize ? "Simulating markets and comparing craft sizes…" : "Running simulation…";
   try {
@@ -984,7 +995,11 @@ $("sim-form").onsubmit = async (event) => {
       if (simulationWorker !== worker) return;
       clearSimulation();
       if (data.error) $("sim-status").textContent = data.error;
-      else showSimulationResults(data.result, trials);
+      else {
+        cache.set(key,data.result);
+        displayedTrial = key;
+        showSimulationResults(data.result,trials);
+      }
     };
     worker.onerror = () => {
       if (simulationWorker !== worker) return;
@@ -1009,8 +1024,8 @@ function routeKey(i, r) {
     (r.stages?.length ? "/chain" : "")
   );
 }
-function calc(i, r) {
-  const settings = prefs().calc[routeKey(i, r)];
+function calc(i, r, preferences = prefs()) {
+  const settings = preferences.calc[routeKey(i, r)];
   return {
     mail: false,
     back: false,
@@ -1022,21 +1037,23 @@ function calc(i, r) {
     batch: validBatch(settings?.batch) ? settings.batch : saved.batchSize,
   };
 }
-let routeQuotes = new WeakMap();
-function pricedRoute(i, r) {
-  const basis = prefs().pricing || "forecast";
-  if (view() !== "market" && basis === "forecast") return forecastRoute(i, r);
-  if (view() === "market" || !["listings", "percentile"].includes(basis)) return r;
-  const c = calc(i, r);
+let routeQuotes = new WeakMap(), forecastQuotes = new WeakMap();
+function pricedRoute(i, r, preferences = prefs()) {
+  const basis = preferences.pricing || "forecast";
+  if (basis === "forecast") return forecastRoute(i, r);
+  if (!["listings", "percentile"].includes(basis)) return r;
+  const c = calc(i, r, preferences);
   const age = basis === "percentile" ? (report.depth_max_age ?? 21600) : (report.shopping_max_age ?? 900);
   const cutoff = AuctionMath.scalar.quote_cutoff(Date.now(), age);
   const epoch = AuctionMath.scalar.freshness_epoch(cutoff, basis === "percentile");
-  const key = JSON.stringify([basis, c, prefs().floor, epoch]);
-  const cached = routeQuotes.get(r);
+  const key = JSON.stringify([basis, c, preferences.floor, epoch]);
+  let variants = routeQuotes.get(r);
+  if (!variants) routeQuotes.set(r, variants = new WeakMap());
+  const cached = variants.get(preferences);
   if (cached?.key === key) return cached.route;
-  const patch = AuctionMath.call("priceRoute", itemForPricing(i), routeForPricing(r), c, basis, Number(prefs().floor || 0), cutoff);
+  const patch = AuctionMath.call("priceRoute", itemForPricing(i), routeForPricing(r), c, basis, Number(preferences.floor || 0), cutoff);
   const route = {...r, ...patch, baseRoute:r};
-  routeQuotes.set(r, {key, route});
+  variants.set(preferences, {key, route});
   return route;
 }
 function forecastRoute(item, route) {
@@ -1044,19 +1061,19 @@ function forecastRoute(item, route) {
   const key = "recipe/" + (route.recipe_id || item.id);
   const range = isCraft(route) && saved.yieldRanges?.[key];
   const cacheKey = ["forecast", sigma, range?.min, range?.max].join("/");
-  const cached = routeQuotes.get(route);
+  const cached = forecastQuotes.get(route);
   if (cached?.key === cacheKey) return cached.route;
   const output = craftYield(item, route, {mail: false});
   if (range) Object.assign(output, range);
   const model = {batch: 1, lines: route.inputs, proceeds: route.proceeds, yield: output};
   // Repeatable screening trials keep the table stable when filtering or navigating.
-  const forecast = AuctionMath.call("forecast", model, 512, sigma, item.id);
+  const forecast = sigma === 10 && !range && route.screening ? route.screening : AuctionMath.call("forecast", model, 512, sigma, item.id);
   const timing = route.timing && {...route.timing, gold_per_hour: forecast.repeatGoldPerHour};
   const priced = {
     ...route, forecast, baseRoute: route, timing,
     cost: forecast.cost, proceeds: forecast.proceeds, profit: forecast.profit,
   };
-  routeQuotes.set(route, {key: cacheKey, route: priced});
+  forecastQuotes.set(route, {key: cacheKey, route: priced});
   return priced;
 }
 function basisText(r) {
@@ -1254,10 +1271,14 @@ main.onclick = async (e) => {
   if (!btn) {
     const row = e.target.closest(".route-row");
     if (row && !e.target.closest("a") && !window.getSelection()?.toString() &&
-        !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) location.assign(row.querySelector("a").href);
+        !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) navigateDashboard(row.querySelector("a").href);
     return;
   }
-  if (btn.dataset.period) {
+  if (btn.dataset.listPage) {
+    listingPage += btn.dataset.listPage === "next" ? 1 : -1;
+    renderItemPage();
+    $("routePage").querySelector('[data-list-page="' + btn.dataset.listPage + '"]:not(:disabled)')?.focus({preventScroll:true});
+  } else if (btn.dataset.period) {
     prefs().chartPeriod = btn.dataset.period;
     render();
     $("routePage").querySelector('[data-period="' + btn.dataset.period + '"]').focus({preventScroll:true});
@@ -1266,27 +1287,12 @@ main.onclick = async (e) => {
     prefs().open[key] = !prefs().open[key];
     render();
     document.querySelector('[data-row="' + btn.dataset.row + '"]')?.focus();
-  } else if (btn.hasAttribute("data-history")) {
-    await loadTiming(btn.dataset.history);
+
   } else if (btn.hasAttribute("data-sim-item")) {
     const item = rows[Number(btn.dataset.simItem)].i;
     openSimulation(
       item.name,
-      {
-        unitOnly: true,
-        batch: 1,
-        postage: 0,
-        proceeds: null,
-        lines: [
-          {
-            id: item.id,
-            name: item.name,
-            source: "estimate",
-            quantity: 1,
-            unit_cost: item.estimate,
-          },
-        ],
-      },
+      unitModel(item),
       [],
       item.estimate_at,
     );
@@ -1303,16 +1309,7 @@ main.onclick = async (e) => {
     const batch = summary(i, route, c);
     openSimulation(
       route.name,
-      {
-        unitOnly: false,
-        batch: c.batch,
-        postage: batch.postage,
-        proceeds: batch.out,
-        expectedInputs: !!route.expected_inputs || destroys(route),
-        chained: !!route.stages?.length,
-        yield: craftYield(i, route, c),
-        lines: route.inputs,
-      },
+      batchModel(i,route,c,batch),
       batch.shortages,
       report.generated_at,
     );
@@ -1362,12 +1359,16 @@ main.onchange = (e) => {
         ? x.checked
         : Math.min(+x.max, Math.max(+x.min, Math.floor(+x.value) || +x.min));
   }
+  warmCustomRoutes();
+  warmTrials();
   render();
 };
 $("batchSize").oninput = (e) => {
   const n = e.target.valueAsNumber;
   if (!validBatch(n)) return;
   saved.batchSize = n;
+  warmCustomRoutes();
+  warmTrials();
   render();
 };
 $("batchSize").onblur = (e) => {
@@ -1387,6 +1388,7 @@ for (const key of [
 ])
   $(key).oninput = (e) => {
     prefs()[key] = e.target.value;
+    if (key === "floor" || key === "pricing") { warmCustomRoutes(); warmTrials(); }
     if (!routePage) prefs().page = 0;
     render();
   };
@@ -1403,16 +1405,27 @@ async function refresh() {
   busy = true;
   try {
     await AuctionMath.load();
-    const res = await fetch("/api/report", {
+    const res = await fetch("/api/dashboard", {
       headers: etag ? { "If-None-Match": etag } : {},
       cache: "no-store",
     });
+    if (res.status === 202) {
+      $("connection").textContent = "Preparing dashboard…";
+      setTimeout(refresh, 1000);
+      return;
+    }
     if (res.status !== 304) {
       if (!res.ok) throw Error("HTTP " + res.status);
       const next = await res.json();
       listingBook = indexListings(next.items);
       routeQuotes = new WeakMap();
+      forecastQuotes = new WeakMap();
       report = next;
+      warmTrials(true);
+      refreshOpenSimulation();
+      timingCache.clear();
+      archivedSeries.clear();
+      warmCustomRoutes();
       etag = res.headers.get("etag");
     }
     offline = "";
@@ -1431,11 +1444,40 @@ async function refresh() {
   }
 }
 $("refresh").onclick = refresh;
-window.onhashchange = setup;
+let lastAddress = location.href;
+function locationChanged() {
+  if (lastAddress === location.href) return;
+  lastAddress = location.href;
+  setup();
+}
+function navigateDashboard(href) {
+  if (location.href === href) return;
+  history.pushState(null,"",href);
+  locationChanged();
+  if (document.querySelector("h1")) {
+    document.querySelector("h1").setAttribute("tabindex","-1");
+    document.querySelector("h1").focus({preventScroll:true});
+  }
+  document.documentElement.scrollTop = 0;
+}
+document.addEventListener("click", event => {
+  const anchor = event.target.closest?.("a[href]");
+  if (!anchor || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey ||
+      event.shiftKey || event.altKey || anchor.target || anchor.hasAttribute("download")) return;
+  const url = new URL(anchor.href);
+  if (url.origin !== location.origin || !["/","/item","/route"].includes(url.pathname)) return;
+  event.preventDefault();
+  navigateDashboard(url.href);
+});
+window.onhashchange = locationChanged;
+window.onpopstate = locationChanged;
+window.addEventListener("pagehide", () => { ++trialRun; trialWorker?.terminate(); trialWorker = null; });
+
 window.addEventListener("pageshow", event => {
   if (!event.persisted) return;
   try { saved = JSON.parse(sessionStorage.wam || JSON.stringify(saved)); } catch {}
   setup();
+  warmTrials();
 });
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) refresh();

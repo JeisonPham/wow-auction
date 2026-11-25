@@ -16,7 +16,16 @@ use std::{
 
 const SCRIPT: &str = include_str!("history.py");
 // Item zero marks a complete market check. Other rows give positive prices and/or known stock.
-pub(super) type Sample = (u32, u64, u8, u64, u64, Option<u64>, Vec<[u64; 3]>);
+pub(super) type Sample = (
+    u32,
+    u64,
+    u8,
+    u64,
+    u64,
+    Option<u64>,
+    Vec<[u64; 3]>,
+    Option<u64>,
+);
 
 fn run(c: &Config, mode: &str, data: &impl Serialize) -> Result<Vec<u8>> {
     let db = c.dir.join(format!(
@@ -65,6 +74,7 @@ pub(super) fn upload(c: &Config, b: &Bundle) -> Result<()> {
             0,
             Some(0),
             vec![],
+            Some(0),
         ));
     }
     for (book, src) in [
@@ -80,6 +90,7 @@ pub(super) fn upload(c: &Config, b: &Bundle) -> Result<()> {
                 p.units,
                 (src == Source::Full).then_some(p.units),
                 depth::levels(&p.lots),
+                (src == Source::Full).then_some(p.auctions),
             ));
         }
     }
@@ -94,6 +105,7 @@ pub(super) fn upload(c: &Config, b: &Bundle) -> Result<()> {
                 p.map_or(0, |p| p.units),
                 Some(available),
                 p.map_or_else(Vec::new, |p| depth::levels(&p.lots)),
+                Some(p.map_or(0, |p| p.auctions)),
             ));
         }
     }
@@ -114,6 +126,7 @@ pub(super) fn broker(c: &Config, book: &BrokerBook) -> Result<()> {
                     1,
                     None,
                     vec![],
+                    None,
                 )
             })
             .collect::<Vec<_>>(),
@@ -133,6 +146,7 @@ pub(super) fn feed(c: &Config, f: &Feed) -> Result<()> {
                     1,
                     None,
                     vec![],
+                    None,
                 )
             })
             .collect::<Vec<_>>(),
@@ -168,4 +182,8 @@ pub(super) fn parse(query: &str) -> Option<Value> {
 }
 pub(super) fn query(c: &Config, args: &Value) -> Result<Vec<u8>> {
     run(c, "query", args)
+}
+
+pub(super) fn archive(c: &Config, ids: &[u64]) -> Result<Value> {
+    serde_json::from_slice(&run(c, "archive", &ids)?).map_err(|e| e.to_string())
 }

@@ -34,3 +34,19 @@ class HourlyArchiveTests(unittest.TestCase):
             record([(1, 9*h, 5, 1, 1, None, [])], first=11)
             self.assertEqual(db.execute("SELECT count(*) FROM prices").fetchone()[0], 0)
             self.assertEqual(quote(), [[11*h, None, None]])
+
+    def test_archived_counts_migrate_and_retain_unknowns(self):
+        old_schema = history.SCHEMA.replace("lots TEXT, listings INTEGER", "lots TEXT")
+        with closing(sqlite3.connect(":memory:")) as db, db:
+            db.executescript(old_schema)
+            db.execute("INSERT INTO depth VALUES(1,10,36000,4,12,NULL)")
+            db.commit()
+            history.migrate(db)
+            history.store(db, [(2,36000,4,80,4,4,[[4,20,1]],1),
+                               (0,39600,4,0,0,0,[],0),
+                               (1,43200,2,100,1,None,[],None)],10)
+            data = history.archive(db,[1,2],10,12)
+            self.assertEqual(data["coverage"],[39600])
+            self.assertEqual(data["items"][1], [[36000,None,12,None,None],[43200,100.,None,None,None]])
+            self.assertEqual(data["items"][2], [[36000,20.,4,1,0]])
+            self.assertEqual(data["level_books"][2], [[[4,20,1]]])

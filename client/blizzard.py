@@ -60,7 +60,7 @@ def positive(value):
     return type(value) is int and 0 < value <= MAX
 
 
-def collect(items, page, commodities, at, house):
+def collect(items, page, commodities, at, house, counts=None):
     if not commodities and page.get("id") != house:
         raise ValueError("Blizzard returned a different auction house")
     if commodities and "auctions" not in page and not ("_links" in page or page.get("id") == house):
@@ -85,6 +85,8 @@ def collect(items, page, commodities, at, house):
         quantity = row["quantity"]
         if not positive(total) or not positive(quantity):
             raise ValueError("Invalid Blizzard buyout or quantity")
+        if counts is not None:
+            counts[item_id] = counts.get(item_id, 0) + 1
         units = 1 if commodities else quantity
         levels = lots.setdefault(item_id, {})
         key = (units, total)
@@ -113,6 +115,7 @@ def fetch(region, market, modified, opener):
     stamps = list(modified)
     items = {}
     depth = [None, None]
+    commodity_counts = None
     for index, suffix in enumerate(("", "/commodities")):
         url = (f"https://{host}.api.blizzard.com/data/wow/ruleset/{rule}/auctions/{house}{suffix}"
                f"?namespace=dynamic-forever-{host}")
@@ -133,9 +136,11 @@ def fetch(region, market, modified, opener):
             at = int(parsedate_to_datetime(stamp).timestamp())
             if at < modified[index] or not 0 < at <= time.time() + 300:
                 raise ValueError("Invalid or older Blizzard snapshot timestamp")
-            depth[index] = collect(items, read_json(response, 128 << 20), bool(index), at, house)
+            if index == 1:
+                commodity_counts = {}
+            depth[index] = collect(items, read_json(response, 128 << 20), bool(index), at, house, commodity_counts)
             stamps[index] = at
-    return dict(region=region, market=market, modified=stamps, items=items, depth=depth)
+    return dict(region=region, market=market, modified=stamps, items=items, depth=depth, commodity_counts=commodity_counts)
 
 
 def main():

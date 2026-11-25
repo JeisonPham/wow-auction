@@ -55,8 +55,8 @@ function timingText(label, result, basis = "per batch") {
 
 const utcHour = (hour) => String(hour).padStart(2, "0") + ":00";
 
-function dailyPriceChart(samples, url, key) {
-  const profile = AuctionMath.call("daily", samples, Date.now());
+function dailyPriceChart(samples, url, key, prepared) {
+  const profile = prepared ?? AuctionMath.call("daily", samples, Date.now());
   const dates = profile.dates.map(t => new Date(t).toISOString().slice(0, 10));
   const sampled = profile.sampled;
   return hourlyChart([["Unit price", { sampled }]], url, key, null, dates);
@@ -269,13 +269,7 @@ function timingPanel(item, route, c, url) {
   const entry = timingCache.get(url);
   let result = "";
   if (entry?.data) {
-    const { buy, sell, margin: projectedMargin } = timingProfile(
-      item,
-      route,
-      c.batch,
-      entry.data,
-      listingBook, summary(item, route, c).postage,
-    );
+    const {buy,sell,margin:projectedMargin} = routeTimingResult(entry,item,route,c);
     const columns = [
       ["Batch cost", buy],
       ["Sale proceeds", sell],
@@ -301,37 +295,41 @@ function timingPanel(item, route, c, url) {
         : "Reagent budgets use historical unit prices.") +
       "</p>";
   }
-  if (entry?.error)
-    result +=
-      '<p role="status">Price history unavailable. Refresh to retry.</p>';
-  return (
-    '<section class="history-panel"><button data-history="' +
-    esc(url) +
-    '"' +
-    (entry?.loading ? " disabled" : "") +
-    ">" +
-    (entry?.loading
-      ? "Loading price history…"
-      : entry?.data
-        ? "Refresh hourly comparison"
-        : entry?.error
-          ? "Retry price history"
-          : "Loading price history…") +
-    "</button>" +
-    result +
-    "</section>"
-  );
+  return '<section class="history-panel">' + result + '</section>';
+}
+
+function routeFloor(route) { return route.percentileMode ? Number(prefs().floor || 0) : null; }
+
+// Share a material's series across all routes using that quantity and price floor.
+const archivedSeries = new Map();
+function prepareTiming(key, materials, floor, needSeries = true) {
+  let entry = timingCache.get(key);
+  if (!entry) {
+    entry = {data:{items:{}}, profiles:new WeakMap()};
+    timingCache.set(key,entry);
+  }
+  if (needSeries && !entry.ready) {
+    for (const {id,need} of materials) {
+      const item = listingBook.get(id);
+      const k = [id,need,floor].join("/");
+      if (!archivedSeries.has(k))
+        archivedSeries.set(k,AuctionMath.call("archiveSeries",item?.hours ?? [],report.covered_hours ?? [],need,floor,floor == null ? [] : item?.level_books ?? []));
+      entry.data.items[id] = archivedSeries.get(k);
+    }
+    entry.ready = true;
+  }
+  return entry;
 }
 
 function marketHistory(item) {
   const url = "/api/price-history?items=" + item.id;
-  const entry = timingCache.get(url);
+  const entry = prepareTiming(url,[{id:item.id,need:1}],null,!item.charts);
   const rows = entry?.data?.items[item.id]?.filter((row) => row[1] != null);
   let content = "";
-  if (rows) {
-    const values = rows.map(([hour, unit]) => [hour, unit]);
-    const low = bestHour(values, false),
-      high = bestHour(values, true);
+  if (item.charts || rows) {
+    const values = (rows ?? []).map(([hour, unit]) => [hour, unit]);
+    const low = item.charts?.low ?? bestHour(values, false),
+      high = item.charts?.high ?? bestHour(values, true);
     const columns = [["Unit price", low]];
     content =
       hourlyChart(columns, url, "item/" + item.id, high) +
@@ -342,52 +340,52 @@ function marketHistory(item) {
       "</p>" +
       hourlyTable(columns) +
       '<p class="hint">Last 28 days, UTC. Each compared hour needs 3 sampled days.</p>';
-  } else if (entry?.error) {
-    content = "<p>Price history unavailable. Try again.</p>";
+  } else {
+    content = "<p>No hourly prices recorded yet.</p>";
   }
-  return (
-    '<section class="history-panel"><button data-history="' +
-    url +
-    '"' +
-    (entry?.loading ? " disabled" : "") +
-    ">" +
-    (entry?.loading
-      ? "Loading price history…"
-      : entry?.data
-        ? "Refresh hourly prices"
-        : "Compare hourly item prices") +
-    "</button>" +
-    content +
-    "</section>"
-  );
+  return '<section class="history-panel">' + content + '</section>';
 }
 
-async function loadTiming(key, initial = false) {
-  const previous = timingCache.get(key);
-  if (previous?.loading) return;
-  const entry = { ...previous, loading: true, error: false };
-  timingCache.set(key, entry);
-  if (!initial) render(true);
-  try {
-    const items = {};
-    for (const url of key.split("|")) {
-      const response = await fetch(url, { cache: "no-store" });
-      if (!response.ok) throw Error("History unavailable");
-      const page = await response.json();
-      Object.assign(items, page.items);
+function routeTimingResult(entry,item,route,c) {
+  if (route.hourly_profile && c.batch === 1 && !route.percentileMode && !route.shopping && !c.mail) return route.hourly_profile;
+  const postage = summary(item,route,c).postage;
+  const cached = entry.profiles.get(route);
+  if (cached && cached.postage === postage && cached.batch === c.batch) return cached.profile;
+  const profile = timingProfile(item,route,c.batch,entry.data,listingBook,postage);
+  entry.profiles.set(route,{postage,batch:c.batch,profile});
+  return profile;
+}
+
+let warmVersion = 0;
+function warmCustomRoutes() {
+  const version = ++warmVersion;
+  if (!report) return;
+  const profiles = [saved.opportunities, saved.professions].filter(Boolean);
+  function* work() {
+    for (const p of profiles) {
+      for (const item of report.items) for (const base of item.routes) {
+        const c = calc(item,base,p);
+        const route = pricedRoute(item,base,p);
+        if (!base.hourly_profile || c.batch !== 1 || c.mail || route.percentileMode || route.shopping) {
+          const floor = route.percentileMode ? Number(p.floor || 0) : null;
+          const materials = routeMaterials(item,route,c.batch);
+          const key = historyForMaterials(materials,route,floor);
+          routeTimingResult(prepareTiming(key,materials,floor),item,route,c);
+        }
+        yield;
+      }
     }
-    entry.data = { items };
-    entry.fetchedAt = Date.now();
-  } catch {
-    entry.error = true;
-  } finally {
-    entry.loading = false;
-    if (timingCache.size > 40) {
-      const oldest = [...timingCache.keys()].find(
-        (k) => k !== key && !timingCache.get(k).loading,
-      );
-      if (oldest) timingCache.delete(oldest);
-    }
-    render(true);
   }
+  const jobs = work();
+  function chunk() {
+    if (version !== warmVersion) return;
+    const start = performance.now();
+    do { if (jobs.next().done) return; } while (performance.now()-start < 8);
+    schedule();
+  }
+  function schedule() {
+    if (window.requestIdleCallback) window.requestIdleCallback(chunk,{timeout:100});
+    else setTimeout(chunk,0);
+  }
+  schedule();
 }

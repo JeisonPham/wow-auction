@@ -2,7 +2,7 @@
 
 function craftOrderModel(item, route, settings) {
   return {
-    order: true,
+    itemId:item.id, routeId:routeKey(item,route), order: true,
     settings, destroys: destroys(route),
     chained: !!route.stages?.length,
     target: AuctionMath.scalar.default_target(route.quantity, settings.batch),
@@ -58,27 +58,16 @@ function orderInputTable(lines) {
     .join("");
 }
 
-async function loadOrderListings(model, signal) {
+function resolveOrderListings(model, show) {
   const lines = model.lines;
   const sales = model.optimize && model.yield.marketSale ? model.yield.saleItems : [];
   const ids = [...new Set([...lines.filter(line => !line.bound), ...sales].map(line => line.id))];
-  const snapshots = {};
-  for (let i = 0; i < ids.length; i += 128) {
-    const response = await fetch(
-      "/api/simulation-listings?items=" + ids.slice(i, i + 128).join(","),
-      { cache: "no-store", signal },
-    );
-    if (!response.ok)
-      throw Error("Listings could not be loaded. Run again to retry.");
-    const data = await response.json();
-    Object.assign(snapshots, data.items);
-  }
+  const snapshots = Object.fromEntries(ids.map(id => [id, listingBook.get(id)?.listing_snapshot]));
   const inputs = lines.map((line) => ({
     ...line,
     snapshot: snapshots[line.id] ?? null,
   }));
-  if (signal.aborted) return [];
-  $("sim-inputs").innerHTML = orderInputTable(inputs);
+  if (show) $("sim-inputs").innerHTML = orderInputTable(inputs);
   if (sales.length) {
     const observations = [];
     model.yield.saleItems = sales.map(line => {
@@ -93,7 +82,7 @@ async function loadOrderListings(model, signal) {
       return {...line, unit_cost: unit};
     });
     model.yield.refreshSale = true;
-    $("sim-sales").textContent = "Auction sale quotes · " + observations.join(" | ");
+    if (show) $("sim-sales").textContent = "Auction sale quotes · " + observations.join(" | ");
   }
   const unknown = inputs.filter(
     (line) =>

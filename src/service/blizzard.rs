@@ -20,6 +20,7 @@ pub(super) struct Ask {
     pub at: u64,
 }
 
+type ListingView<'a> = (u64, &'a [[u64; 3]], Option<u64>);
 type ListingBook = BTreeMap<u32, Vec<[u64; 3]>>;
 
 #[derive(Default, Deserialize, Serialize)]
@@ -30,6 +31,8 @@ pub(super) struct Book {
     pub items: BTreeMap<u32, Ask>,
     #[serde(default)]
     depth: [Option<ListingBook>; 2],
+    #[serde(default)]
+    commodity_counts: Option<BTreeMap<u32, u64>>,
 }
 
 impl Book {
@@ -64,23 +67,45 @@ impl Book {
                 }
             }
         }
+        if let Some(counts) = &book.commodity_counts {
+            for (id, count) in counts {
+                let units = book.depth[1]
+                    .as_ref()
+                    .and_then(|b| b.get(id))
+                    .map_or(0, |lots| lots.iter().map(|r| r[0] * r[2]).sum());
+                if *count == 0 || *count > units {
+                    return Err("Invalid commodity listing count".into());
+                }
+            }
+        }
         Ok(book)
     }
 
-    pub(super) fn listings(&self, id: u32) -> Option<(u64, &[[u64; 3]])> {
-        // Listings and commodities publish on separate clocks. Never add two snapshots together.
-        let present = self
-            .depth
+    fn count(&self, index: usize, id: u32, lots: &[[u64; 3]]) -> Option<u64> {
+        if lots.is_empty() {
+            return Some(0);
+        }
+        if index == 0 {
+            return Some(lots.iter().map(|r| r[2]).sum());
+        }
+        self.commodity_counts.as_ref()?.get(&id).copied()
+    }
+    pub(super) fn listings(&self, id: u32) -> Option<ListingView<'_>> {
+        // Individually purchasable commodity units can belong to the same auction.
+        self.depth
             .iter()
-            .zip(self.modified)
-            .filter_map(|(book, at)| Some((at, book.as_ref()?.get(&id)?.as_slice())))
-            .max_by_key(|(at, lots)| (!lots.is_empty(), *at));
-        present.or_else(|| {
-            self.depth
-                .iter()
-                .all(Option::is_some)
-                .then(|| (self.modified[0].min(self.modified[1]), &[][..]))
-        })
+            .enumerate()
+            .filter_map(|(i, book)| {
+                let rows = book.as_ref()?.get(&id)?.as_slice();
+                Some((self.modified[i], rows, self.count(i, id, rows)))
+            })
+            .max_by_key(|(at, lots, _)| (!lots.is_empty(), *at))
+            .or_else(|| {
+                self.depth
+                    .iter()
+                    .all(Option::is_some)
+                    .then(|| (self.modified[0].min(self.modified[1]), &[][..], Some(0)))
+            })
     }
     fn conditional_times(&self) -> [u64; 2] {
         std::array::from_fn(|i| {
@@ -96,9 +121,9 @@ impl Book {
         let mut rows: Vec<_> = self
             .items
             .iter()
-            .map(|(&id, p)| (id, p.at, src, p.total, p.units, None, vec![]))
+            .map(|(&id, p)| (id, p.at, src, p.total, p.units, None, vec![], None))
             .collect();
-        for (book, at) in self.depth.iter().zip(self.modified) {
+        for (index, (book, at)) in self.depth.iter().zip(self.modified).enumerate() {
             for (&id, lots) in book.iter().flat_map(|b| b.iter()) {
                 if lots.is_empty() {
                     if self
@@ -109,13 +134,22 @@ impl Book {
                     {
                         continue;
                     }
-                    rows.push((id, at, src, 0, 0, Some(0), vec![]));
+                    rows.push((id, at, src, 0, 0, Some(0), vec![], Some(0)));
                     continue;
                 }
                 let levels = depth::levels(lots);
                 let [_, total, size] = levels[0];
                 let available = levels.last().unwrap()[0];
-                rows.push((id, at, src, total, size, Some(available), levels));
+                rows.push((
+                    id,
+                    at,
+                    src,
+                    total,
+                    size,
+                    Some(available),
+                    levels,
+                    self.count(index, id, lots),
+                ));
             }
         }
         if self.depth.iter().all(Option::is_some) {
@@ -127,6 +161,7 @@ impl Book {
                 0,
                 Some(0),
                 vec![],
+                Some(0),
             ));
         }
         history::record(c, &rows)
@@ -190,6 +225,10 @@ fn accept(c: &Config, state: &mut State, raw: &[u8]) -> Result<()> {
     for (i, depth) in next.depth.iter_mut().enumerate() {
         if depth.is_none() && next.modified[i] == state.blizzard.modified[i] {
             depth.clone_from(&state.blizzard.depth[i]);
+            if i == 1 {
+                next.commodity_counts
+                    .clone_from(&state.blizzard.commodity_counts);
+            }
         } else if let (Some(book), Some(prior)) = (depth, &state.blizzard.depth[i]) {
             // Keep which endpoint last checked a sold-out item. Each endpoint has its own clock.
             for id in prior.keys() {

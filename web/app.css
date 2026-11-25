@@ -630,3 +630,16 @@ main {
 @media(max-width:760px) { .route-columns,.material-grid { grid-template-columns:1fr; } }
 .route-row { cursor: pointer; }
 .route-row:hover, .route-row:focus-within { background: #1b2c3c; }
+
+a.item-link, .item-report a { color: var(--gold); text-underline-offset: 3px; }
+td > .item-link { display: block; font-size: .85rem; }
+.item-view #workspace { display: none; }
+.item-report .route-panel { margin-top: 1.2rem; }
+.item-table-scroll { overflow-x: auto; }
+.item-report table { width: 100%; min-width: 38rem; }
+.week-calendar table { min-width: 58rem; font-variant-numeric: tabular-nums; }
+.week-calendar td { vertical-align: top; }
+.week-calendar td span, .week-calendar td small { display: block; }
+.week-calendar td small, .week-calendar .unobserved { color: var(--muted); }
+.week-calendar th:first-child { position: sticky; left: 0; background: var(--panel); }
+.listing-pager { display:flex; gap:1rem; align-items:center; margin-top:.8rem; }

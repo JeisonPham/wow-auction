@@ -114,36 +114,30 @@ items[6].routes = [
     expected_inputs: true,
   },
 ];
+items[40].id = 1001;
+items[41].id = 9001;
+items[42].id = 9002;
 let fail = false,
   copied;
 const historicDay = (Math.floor(at / 86400) - 4) * 86400;
-let historyHits = 0;
+let historyHits = 0, reportHits = 0;
 let orderBook = {1001: {source: "Blizzard Auction House", observed_at: at, available: 7, lots: [[1, 2, 4], [3, 15, 1]]}};
 w.TextEncoder = TextEncoder;
 w.TextDecoder = TextDecoder;
 w.WebAssembly = WebAssembly;
 w.fetch = async (url) => {
   if (url === "/auction.wasm") return new Response(require("./wasm.cjs").bytes, {headers:{"Content-Type":"application/wasm"}});
-  if (url === "/api/reagent-listings?items=1001" || url.startsWith("/api/simulation-listings?items=")) {
-    return {ok:true, json:async () => ({items:orderBook})};
-  }
-  if (url.startsWith("/api/price-history?")) {
-    historyHits++;
-    const args = new URL(url, "http://localhost").searchParams;
-    const hourly = {};
-    for (const pair of args.get("items").split(",")) {
-      const [id, qty = "1"] = pair.split(":");
-      hourly[id] = [];
-      for (let day = 0; day < 3; day++) {
-        for (const [h,unit] of [[8,3],[18,8]]) {
-          const price = id === "1001" ? unit : 10 * unit;
-          hourly[id].push([historicDay + day*86400 + h*3600, price, price*Number(qty)]);
-        }
-      }
+  if (url !== "/api/dashboard") { historyHits++; throw Error("Unexpected page request " + url); }
+  // The native endpoint supplies all item books and hourly observations together.
+  for (const item of items) {
+    item.hours = [];
+    item.listing_snapshot = orderBook[item.id];
+    for (let day=0;day<3;day++) for (const [h,unit] of [[8,3],[18,8]]) {
+      const price = item.id===1001 ? unit : 10*unit;
+      item.hours.push([historicDay+day*86400+h*3600, price, 100, 50, [[100,price,1]]]);
     }
-    return {ok:true, json:async () => ({days:28, items:hourly})};
   }
-
+  reportHits++;
   if (fail) throw Error("Offline");
   return {
     ok: true,
@@ -174,6 +168,7 @@ dialog.close = () => {
   dialog.removeAttribute("open");
   dialog.dispatchEvent(new w.Event("close"));
 };
+let preparedUnitPrice = false;
 w.Worker = class {
   constructor(url) {
     const { Worker } = require("node:worker_threads");
@@ -186,10 +181,15 @@ w.Worker = class {
         '\nparentPort.on("message", data => self.onmessage({data}));',
       { eval: true },
     );
-    this.thread.on("message", (data) => this.onmessage({ data }));
+    this.thread.on("message", (data) => {
+      this.onmessage({ data });
+      if (!data.error && this.job?.unitOnly && this.job.itemId === 2000) preparedUnitPrice = true;
+    });
     this.thread.on("error", (error) => this.onerror(error));
+    this.thread.unref();
   }
   postMessage(data) {
+    this.job = data.model;
     this.thread.postMessage(data);
   }
   terminate() {
@@ -197,13 +197,13 @@ w.Worker = class {
   }
 };
 w.eval(
-  ["web/calculations.js", "web/shopping.js", "web/history.js", "web/route.js", "web/craft-order.js", "web/app.js"]
+  ["web/calculations.js", "web/shopping.js", "web/history.js", "web/item.js", "web/route.js", "web/craft-order.js", "web/warm.js", "web/app.js"]
     .map((file) => fs.readFileSync(file, "utf8"))
     .join("\n"),
 );
 // jsdom does not load a second document when following a link.
 function visit(href) {
-  dom.reconfigure({url:new URL(href,w.location.href).href});
+  w.history.pushState(null,"",new URL(href,w.location.href).href);
   d.querySelector("#body").replaceChildren();
   d.querySelector("#routePage").replaceChildren();
   w.onhashchange();
@@ -236,7 +236,10 @@ async function runSimulation() {
   assert.equal(d.querySelector("#broker-count").textContent, "1 of 2 fresh");
   d.querySelector(".rowname").click();
   assert.match(d.querySelector("#body").textContent, /Booty Bay Broker lowest buyout 7c/);
+  for (let i = 0; i < 400 && !preparedUnitPrice; i++) await wait();
+  assert.ok(preparedUnitPrice, "the snapshot starts unit-price trials in the background");
   d.querySelector("[data-sim-item]").click();
+  assert.match(d.querySelector("#sim-result").textContent, /Mean unit price/);
   assert.equal(d.querySelector("#sim-gold").disabled, true);
   assert.equal(d.querySelector("#sim-yield-min").disabled, true);
   assert.match(d.querySelector("#sim-inputs").textContent, /7cBooty Bay Broker/);
@@ -406,7 +409,11 @@ async function runSimulation() {
   assert.match(d.querySelector("#sim-status").textContent, /5,000 trials completed/);
   dialog.close();
   d.querySelector("[data-sim-order]").click();
+  dialog.close();
   orderBook = {1001: null};
+  d.querySelector("#refresh").click();
+  await wait();
+  d.querySelector("[data-sim-order]").click();
   d.querySelector("#sim-form button").click();
   await wait();
   assert.match(d.querySelector("#sim-status").textContent, /Recorded stack prices needed for Ore/);
@@ -554,7 +561,7 @@ async function runSimulation() {
     checked_at: at,
     routes: [],
   };
-  items.push(ore);
+  items[items.findIndex(i => i.id === 1001)] = ore;
   d.querySelector("#refresh").click();
   await wait();
   filter("profitability", "profit");
@@ -597,7 +604,7 @@ async function runSimulation() {
   assert.match(d.querySelector(".route").textContent, /P30 · 10 units listed · Blizzard/);
   await wait();
   const firstHits = historyHits;
-  assert.ok(firstHits > 0);
+  assert.equal(firstHits,0);
   assert.match(d.querySelector(".route").textContent, /08:00 UTC · 9c median per batch/);
   assert.match(d.querySelector(".route").textContent, /Sell · Any hour · 1s 0c at vendor prices/);
   assert.match(d.querySelector(".route").textContent, /Hourly medians and sampled days/);
@@ -625,10 +632,9 @@ async function runSimulation() {
   assert.equal(slider(), d.activeElement);
   assert.equal(historyHits, firstHits);
   bar(18).click();
-  d.querySelector("[data-history]").click();
   await wait();
   assert.equal(slider().value, "18");
-  assert.equal(historyHits, firstHits + 1);
+  assert.equal(historyHits, firstHits);
   d.querySelector("[data-sim-craft]").click();
   assert.match(d.querySelector("#sim-inputs").textContent, /P30 · Blizzard/);
   dialog.close();
@@ -646,7 +652,6 @@ async function runSimulation() {
   await wait();
   filter("search", "1001");
   d.querySelector(".rowname").click();
-  d.querySelector("[data-history]").click();
   await wait();
   assert.match(d.querySelector(".detail").textContent, /Lowest unit price · 08:00 UTC · 3c median per unit/);
   assert.match(d.querySelector(".detail").textContent, /Highest unit price · 18:00 UTC · 8c median per unit/);
@@ -680,6 +685,22 @@ async function runSimulation() {
   assert.match(d.querySelector("#sim-inputs").textContent,/In-game full scan · Stale/);
   assert.match(d.querySelector("#sim-sales").textContent,/Blizzard Auction House/);
   dialog.close();
+  // Internal item links and Back use the same published version without network reads.
+  const beforeItem = reportHits;
+  const oldPath = w.location.href;
+  const link = d.querySelector('.material-card a[href^="/item?"]');
+  link.click();
+  assert.equal(w.location.pathname,"/item");
+  assert.match(d.querySelector(".item-report").textContent,/Auction listings/);
+  assert.equal(d.querySelectorAll(".week-calendar tbody tr").length,24);
+  assert.equal(d.querySelectorAll(".week-calendar tbody td").length,168);
+  assert.equal(reportHits,beforeItem);
+  assert.equal(historyHits,0);
+  w.history.back();
+  for (let i=0;i<100 && w.location.href!==oldPath;i++) await wait();
+  assert.equal(w.location.href,oldPath);
+  assert.ok(d.querySelector(".route-report"));
+  assert.equal(reportHits,beforeItem);
   console.log(
     "Dashboard search, pagination, profit filters, routes, batch shortage, postage, clipboard and offline retention passed",
   );

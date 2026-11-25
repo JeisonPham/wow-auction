@@ -41,6 +41,8 @@ pub(super) fn levels(lots: &[[u64; 3]]) -> Vec<[u64; 3]> {
 
 #[derive(Serialize)]
 pub(super) struct ListingSnapshot<'a> {
+    #[serde(skip)]
+    auctions: Option<u64>,
     source: &'static str,
     pub(super) observed_at: u64,
     available: u64,
@@ -48,6 +50,9 @@ pub(super) struct ListingSnapshot<'a> {
 }
 
 impl<'a> ListingSnapshot<'a> {
+    pub fn count(&self) -> Option<u64> {
+        self.auctions
+    }
     pub fn for_item(
         id: u32,
         checks: &MarketChecks<'a>,
@@ -56,23 +61,28 @@ impl<'a> ListingSnapshot<'a> {
         age: u64,
     ) -> Option<Self> {
         let local = checks.get(id);
-        let api = blizzard.listings(id).filter(|(at, _)| fresh(*at, now, age));
-        let (source, observed_at, lots, available) = match (local, api) {
-            (Some((at, p, source)), api) if api.is_none_or(|(t, _)| at >= t) => (
+        let api = blizzard
+            .listings(id)
+            .filter(|(at, _, _)| fresh(*at, now, age));
+        let (source, observed_at, lots, available, auctions) = match (local, api) {
+            (Some((at, p, source)), api) if api.is_none_or(|(t, _, _)| at >= t) => (
                 source,
                 at,
                 p.map_or(&[][..], |p| p.lots.as_slice()),
                 p.map_or(0, |p| p.units),
+                Some(p.map_or(0, |p| p.auctions)),
             ),
-            (_, Some((at, lots))) => (
+            (_, Some((at, lots, count))) => (
                 "Blizzard Auction House",
                 at,
                 lots,
                 lots.iter().map(|&[size, _, count]| size * count).sum(),
+                count,
             ),
             _ => return None,
         };
         Some(Self {
+            auctions,
             source,
             observed_at,
             lots,

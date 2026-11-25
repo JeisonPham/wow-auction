@@ -82,6 +82,7 @@ class HostTests(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertIn(b'id="routePage"', html)
         self.assertIn(b'fullRoute', self.req("/route.js")[1])
+        self.assertEqual(self.req("/item?item=1001")[0], 200)
         code, wasm, headers = self.req("/auction.wasm")
         self.assertEqual((code, wasm[:4], headers.get_content_type()), (200, b'\x00asm', "application/wasm"))
         self.assertIn(b'craftOrderModel', self.req("/craft-order.js")[1])
@@ -143,6 +144,27 @@ class HostTests(unittest.TestCase):
         self.assertEqual(next(i["lots"] for i in r["items"] if i["id"] == 1001), [[2, 11, 2]])
         self.assertIn(b"/shopping.js", self.req("/")[1])
         self.assertIn(b'AuctionMath.call("register"', self.req("/shopping.js")[1])
+        deadline = time.monotonic() + 45
+        while time.monotonic() < deadline:
+            code, body, prepared_headers = self.req("/api/dashboard", headers={"Accept-Encoding":"gzip"})
+            if code == 200:
+                self.assertEqual(prepared_headers["Content-Encoding"], "gzip")
+                prepared = json.loads(gzip.decompress(body))
+                if prepared["upload_revision"] == bundle["revision"]:
+                    break
+            time.sleep(.1)
+        else:
+            self.fail("Updated dashboard snapshot was not published")
+        by_id = {i["id"]:i for i in prepared["items"]}
+        self.assertEqual(by_id[1001]["listing_detail"]["tiers"], [[2,11,2,5.5,4,4]])
+        import datetime
+        observation = datetime.datetime.fromtimestamp(at,datetime.timezone.utc)
+        slot = str(observation.weekday()*24 + observation.hour)
+        self.assertEqual(by_id[1001]["calendar"][slot], [5.5,4,2,1,1,1])
+        self.assertEqual(by_id[1002]["calendar"][slot], [None,0,0,0,1,1])
+        self.assertIn("screening", by_id[2000]["routes"][0])
+        self.assertIn("hourly_profile", by_id[2000]["routes"][0])
+        self.assertEqual(self.req("/api/dashboard",headers={"If-None-Match":prepared_headers["ETag"]})[0],304)
         self.assertIn(1001, r["scan_queue"])
         self.assertEqual(
             next(

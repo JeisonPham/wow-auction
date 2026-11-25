@@ -1,16 +1,17 @@
 "use strict";
 
 function readRouteAddress() {
-  if (location.pathname !== "/route") return null;
+  if (!["/route","/item"].includes(location.pathname)) return null;
   const q = new URLSearchParams(location.search);
   return {
+    detail: location.pathname === "/item",
     item: Number(q.get("item")),
     kind: q.get("exit"),
     recipe: q.get("recipe") ?? "",
     path: q.get("path") || "direct",
     from: Object.hasOwn(titles, q.get("from"))
       ? q.get("from")
-      : "opportunities",
+      : location.pathname === "/item" ? "market" : "opportunities",
   };
 }
 
@@ -66,7 +67,7 @@ function routeMaterials(item, route, batch) {
   }));
 }
 
-function historyForMaterials(materials, route) {
+function historyForMaterials(materials, route, floor = routeFloor(route)) {
   const sorted = [...materials].sort((a, b) => a.id - b.id);
   const requests = [];
   for (let i = 0; i < sorted.length; i += 128) {
@@ -74,7 +75,7 @@ function historyForMaterials(materials, route) {
     requests.push(
       "/api/price-history?items=" +
         pairs.join(",") +
-        (route.percentileMode ? "&floor=" + Number(prefs().floor || 0) : ""),
+        (route.percentileMode ? "&floor=" + floor : ""),
     );
   }
   return requests.join("|");
@@ -93,11 +94,11 @@ function materialCard(material, route, history, daily) {
       ? { available: i.listed_units, observed_at: i.checked_at }
       : null);
   let chart = "";
-  if (samples.length) {
-    const low = bestHour(samples, false),
-      high = bestHour(samples, true);
+  if (i?.charts || samples.length) {
+    const low = i?.charts?.low ?? bestHour(samples, false),
+      high = i?.charts?.high ?? bestHour(samples, true);
     chart = daily
-      ? dailyPriceChart(samples, history, "daily/" + id)
+      ? dailyPriceChart(samples, history, "daily/" + id, i?.charts?.daily)
       : hourlyChart([["Unit price", low]], history, "material/" + id, high);
   } else if (entry?.data) {
     chart =
@@ -110,7 +111,7 @@ function materialCard(material, route, history, daily) {
   }
   return `<section class="material-card">
     <p class="material-role">${esc([...roles].join(" · "))}</p>
-    <h3>${esc(name)} <small>#${id}</small></h3>
+    <h3>${itemLink(id,name)} <small>#${id}</small></h3>
     <dl class="material-facts">
       ${purchase ? `<div><dt>Batch purchase</dt><dd>${esc(need.toLocaleString())} × ${money(purchase.unit_cost)} <small>${esc(lineBasis(purchase, route))}</small></dd></div>` : ""}
       <div><dt>Latest auction price</dt><dd>${money(i?.estimate)} <small>${esc(priceObservation(i))}</small></dd></div>
@@ -124,7 +125,7 @@ function purchaseBreakdown(r, c) {
   const amounts = AuctionMath.call("breakdown", r.inputs, c.batch);
   const lines = r.inputs.map((l, j) => {
     const {cost, share} = amounts[j];
-    return `<li><div class="cost-label"><span>${esc(l.name)} × ${(AuctionMath.scalar.batch_units(l.quantity, c.batch)).toLocaleString()}</span>
+    return `<li><div class="cost-label"><span>${itemLink(l.id,l.name)} × ${(AuctionMath.scalar.batch_units(l.quantity, c.batch)).toLocaleString()}</span>
       <strong>${money(cost)}${share != null ? " · " + Math.round(share) + "%" : ""}</strong></div>
       ${share != null ? `<div class="cost-track"><i style="width:${share}%"></i></div>` : ""}
       <small>${esc(lineBasis(l, r))} · ${money(l.unit_cost)} each</small></li>`;
@@ -137,6 +138,7 @@ function fullRoute(item, r) {
     b = summary(item, r, c);
   const materials = routeMaterials(item, r, c.batch);
   const history = historyForMaterials(materials, r);
+  prepareTiming(history, materials, routeFloor(r), !(r.hourly_profile && c.batch === 1 && !r.percentileMode && !r.shopping && !c.mail));
   const daily = prefs().chartPeriod === "daily";
   const override = prefs().calc[routeKey(item, r)]?.batch;
   const field = (key, label, max) =>
@@ -159,7 +161,7 @@ function fullRoute(item, r) {
       ${metric("Batch cost", money(b.cost))}${metric("Sale proceeds", money(b.out))}
       ${metric("Batch time", duration(b.seconds))}${metric("Batch gold per hour", hourly(b.goldPerHour))}
     </dl>
-    <div class="route-actions">${isCraft(r) ? '<button class="sim-launch" aria-haspopup="dialog" data-sim-order>Estimate cost for a quantity</button><button class="sim-launch" aria-haspopup="dialog" data-optimize>Find optimal craft quantity</button>' + craftSimulationButton(r) : ""}<button data-copy>Copy Markdown</button></div>
+    <div class="route-actions">${itemLink(item.id,"Item prices and listings")}${isCraft(r) ? '<button class="sim-launch" aria-haspopup="dialog" data-sim-order>Estimate cost for a quantity</button><button class="sim-launch" aria-haspopup="dialog" data-optimize>Find optimal craft quantity</button>' + craftSimulationButton(r) : ""}<button data-copy>Copy Markdown</button></div>
     <div class="route-columns">
       <section class="route-panel"><h2>Production plan</h2>
         <ol class="production-list">${production.map((s) => "<li>" + esc(s) + "</li>").join("")}</ol>
@@ -252,7 +254,4 @@ function renderRoutePage(preserveDraft) {
       input.focus({ preventScroll: true });
     }
   }
-  const entry = timingCache.get(result.history);
-  if (!entry || (!entry.loading && !entry.error && Date.now() - entry.fetchedAt >= 300_000))
-    void loadTiming(result.history, true);
 }

@@ -1,5 +1,6 @@
 mod blizzard;
 mod broker_poll;
+mod dashboard;
 mod depth;
 mod history;
 use crate::{
@@ -325,7 +326,7 @@ fn accept_broker(
     }
     Ok(json!({"updated":updated,"total":state.broker.items.len()}))
 }
-fn handle(mut r: Request, c: &Config, state: &Mutex<State>) {
+fn handle(mut r: Request, c: &Config, state: &Mutex<State>, published: &dashboard::Published) {
     let path = r.url().split('?').next().unwrap_or("").to_owned();
     let method = r.method().as_str().to_owned();
     let broker = path == "/api/bootybay/prices";
@@ -378,17 +379,22 @@ fn handle(mut r: Request, c: &Config, state: &Mutex<State>) {
     if method != "GET" && method != "HEAD" {
         return fail(r, 405, "unsupported method");
     }
+    if path == "/api/dashboard" {
+        return dashboard::serve(r, published);
+    }
     if path == "/auction.wasm" {
         static MODULE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/auction.wasm"));
         return respond(r, 200, "application/wasm", Arc::from(MODULE), None);
     }
     let asset = match path.as_str() {
         "/calculations.js" => Some(("text/javascript", include_str!("../web/calculations.js"))),
-        "/" | "/route" => Some((
+        "/" | "/route" | "/item" => Some((
             "text/html; charset=utf-8",
             include_str!("../web/index.html"),
         )),
         "/app.css" => Some(("text/css", include_str!("../web/app.css"))),
+        "/warm.js" => Some(("text/javascript", include_str!("../web/warm.js"))),
+        "/item.js" => Some(("text/javascript", include_str!("../web/item.js"))),
         "/app.js" => Some(("text/javascript", include_str!("../web/app.js"))),
         "/route.js" => Some(("text/javascript", include_str!("../web/route.js"))),
         "/craft-order.js" => Some(("text/javascript", include_str!("../web/craft-order.js"))),
@@ -639,11 +645,13 @@ pub fn run() -> Result<()> {
             thread::sleep(Duration::from_secs(delay))
         });
     }
+    let published = dashboard::Published::new(None);
     thread::scope(|scope| {
+        scope.spawn(|| dashboard::run(&c, &state, &published));
         for _ in 0..4 {
             scope.spawn(|| {
                 for req in server.incoming_requests() {
-                    handle(req, &c, &state)
+                    handle(req, &c, &state, &published)
                 }
             });
         }

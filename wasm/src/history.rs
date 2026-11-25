@@ -7,7 +7,7 @@ pub fn samples(v: &V) -> Vec<(u64, f64)> {
         .filter_map(|r| Some((r[0].as_u64()?, r[1].as_f64()?)))
         .collect()
 }
-fn median(values: &mut [f64]) -> f64 {
+pub(crate) fn median(values: &mut [f64]) -> f64 {
     values.sort_unstable_by(f64::total_cmp);
     (values[(values.len() - 1) / 2] + values[values.len() / 2]) / 2.
 }
